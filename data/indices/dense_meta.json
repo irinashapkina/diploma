@@ -1,0 +1,30 @@
+{
+  "chunk_ids": [
+    "76bacc31-90ce-42a0-b321-2cbdce4e4c4e",
+    "44c722b2-4cf8-4488-a740-aad5ff407702",
+    "ec45db54-4373-44ea-95ec-ccc4aa168721",
+    "ca8bd2bf-8f6b-42b8-ad1e-ef731c3f8578",
+    "9ad540f2-3b84-4143-a622-1885f4be063c",
+    "369c8f70-dfe9-48e3-8eed-ac6b8e040c8a",
+    "ff080dea-62a9-4618-92da-0304a7313e25",
+    "636b0c3d-ec27-4c8f-b531-be3d800241a8",
+    "ff78078c-ea74-411c-9463-2408387468d0",
+    "21c2f630-8476-478d-9aa3-3f8c830f1dd5",
+    "d4726b3a-8a06-40a7-a085-fd19659878db",
+    "269c452a-4511-4dfe-aab2-9a87693a4b3f",
+    "821f0429-83de-4de7-9188-8415f6719b66",
+    "d06de4e7-b145-4b01-96c3-7a3a233dc18a",
+    "a4d0078e-1f15-48bb-b731-a909437590b3",
+    "ffff68af-66ed-4c30-b5a6-d2641f7799a1",
+    "36dadec3-62cb-41b3-88a3-6f8e78b38ea3",
+    "94f01963-5e20-4c17-95e0-116ed7ebaf5d",
+    "64eb0320-9a55-4cc7-a035-adc381ee01f4",
+    "7acd7e58-5de3-4fc3-b1f9-042ece83c7a4",
+    "df9c9f3d-5a9d-44fe-a934-7e88e7850312",
+    "cf73603a-ba89-4eb9-adf8-62d796754389",
+    "e3ce2181-dc9b-4d1a-9efc-7a1e6d5d166c",
+    "7bc5f006-deae-450e-9282-ae6088b375ff"
+  ],
+  "model_name": "intfloat/multilingual-e5-base",
+  "backend": "numpy"
+}
