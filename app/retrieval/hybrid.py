@@ -63,6 +63,9 @@ class HybridRetriever:
                             "dense_score": 0.0,
                             "visual_score": 0.0,
                             "has_diagram": bool(chunk.metadata.get("has_diagram", False)),
+                            "text_source": chunk.metadata.get("text_source", "ocr"),
+                            "pdf_text_quality": float(chunk.metadata.get("pdf_text_quality", 0.0)),
+                            "ocr_text_quality": float(chunk.metadata.get("ocr_text_quality", 0.0)),
                         },
                     )
                     combined[key] = cand
@@ -92,6 +95,9 @@ class HybridRetriever:
                             "dense_score": 0.0,
                             "visual_score": 0.0,
                             "has_diagram": bool(chunk.metadata.get("has_diagram", False)),
+                            "text_source": chunk.metadata.get("text_source", "ocr"),
+                            "pdf_text_quality": float(chunk.metadata.get("pdf_text_quality", 0.0)),
+                            "ocr_text_quality": float(chunk.metadata.get("ocr_text_quality", 0.0)),
                         },
                     )
                     combined[key] = cand
@@ -115,13 +121,16 @@ class HybridRetriever:
                         document_title=page.document_title,
                         page_id=page.page_id,
                         page_number=page.page_number,
-                        text=page.ocr_text_clean[:700],
+                        text=(page.merged_text or page.pdf_text_raw or page.ocr_text_clean)[:900],
                         image_path=page.image_path,
                         debug={
                             "bm25_score": 0.0,
                             "dense_score": 0.0,
                             "visual_score": 0.0,
                             "has_diagram": page.has_diagram,
+                            "text_source": page.text_source,
+                            "pdf_text_quality": page.pdf_text_quality,
+                            "ocr_text_quality": page.ocr_text_quality,
                         },
                     )
                     combined[key] = cand

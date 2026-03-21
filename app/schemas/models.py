@@ -20,12 +20,18 @@ class PageRecord(BaseModel):
     page_id: str
     page_number: int
     image_path: str
+    pdf_text_raw: str = ""
     ocr_text_raw: str
     ocr_text_clean: str
+    merged_text: str = ""
+    text_source: Literal["pdf", "ocr", "pdf+ocr"] = "ocr"
+    pdf_text_quality: float = 0.0
+    ocr_text_quality: float = 0.0
     language: Literal["ru", "en", "mixed", "unknown"]
     has_diagram: bool
     has_table: bool
     has_code_like_text: bool
+    has_large_image: bool = False
 
 
 class ChunkRecord(BaseModel):
@@ -79,4 +85,3 @@ class AskResponse(BaseModel):
 
 def path_to_str(path: Path) -> str:
     return str(path.as_posix())
-

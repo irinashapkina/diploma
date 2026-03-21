@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     enable_visual_index: bool = True
     clip_model_name: str = "openai/clip-vit-base-patch32"
     colqwen2_model_name: str = "vidore/colqwen2-v0.1"
+    minicpm_v_enabled: bool = False
 
     bm25_top_k: int = 8
     dense_top_k: int = 8

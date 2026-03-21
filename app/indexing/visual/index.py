@@ -25,6 +25,7 @@ class VisualHit:
 class VisualPageIndex:
     def __init__(self, backend: str | None = None) -> None:
         self.backend = (backend or settings.visual_backend).lower()
+        self.active_backend = self.backend
         self.path_meta = settings.indices_dir / "visual_meta.json"
         self.path_embeddings = settings.indices_dir / "visual_embeddings.npy"
         self.page_ids: list[str] = []
@@ -33,6 +34,12 @@ class VisualPageIndex:
         self._clip_model: CLIPModel | None = None
         self._clip_processor: CLIPProcessor | None = None
         self._colqwen2 = None
+        logger.info(
+            "Visual index configured: requested_backend=%s clip_model=%s colqwen2_model=%s",
+            self.backend,
+            settings.clip_model_name,
+            settings.colqwen2_model_name,
+        )
 
     def _load_clip(self) -> tuple[CLIPProcessor, CLIPModel]:
         if self._clip_processor is None or self._clip_model is None:
@@ -58,14 +65,17 @@ class VisualPageIndex:
         if not self.image_paths:
             return
 
-        if self.backend == "colqwen2":
+        requested = self.backend
+        if requested == "colqwen2":
             try:
                 self.embeddings = self._build_colqwen2_embeddings(self.image_paths)
+                self.active_backend = "colqwen2"
             except Exception as exc:
-                logger.warning("ColQwen2 failed (%s), fallback to CLIP backend", exc)
-                self.backend = "clip"
+                logger.warning("ColQwen2 build failed (%s); fallback to CLIP backend", exc)
+                self.active_backend = "clip"
                 self.embeddings = self._build_clip_embeddings(self.image_paths)
         else:
+            self.active_backend = "clip"
             self.embeddings = self._build_clip_embeddings(self.image_paths)
 
         np.save(self.path_embeddings, self.embeddings)
@@ -74,10 +84,16 @@ class VisualPageIndex:
             {
                 "page_ids": self.page_ids,
                 "image_paths": self.image_paths,
-                "backend": self.backend,
+                "backend": self.active_backend,
+                "requested_backend": requested,
             },
         )
-        logger.info("Visual index built: %s pages with backend=%s", len(self.page_ids), self.backend)
+        logger.info(
+            "Visual index built: pages=%s requested_backend=%s active_backend=%s",
+            len(self.page_ids),
+            requested,
+            self.active_backend,
+        )
 
     def _build_clip_embeddings(self, image_paths: list[str]) -> np.ndarray:
         processor, model = self._load_clip()
@@ -111,7 +127,8 @@ class VisualPageIndex:
             meta = read_json(self.path_meta)
             self.page_ids = meta.get("page_ids", [])
             self.image_paths = meta.get("image_paths", [])
-            self.backend = meta.get("backend", self.backend)
+            self.active_backend = meta.get("backend", self.backend)
+            self.backend = meta.get("requested_backend", self.backend)
         if self.path_embeddings.exists():
             self.embeddings = np.load(self.path_embeddings)
 
@@ -140,12 +157,13 @@ class VisualPageIndex:
         if self.embeddings is None or self.embeddings.size == 0:
             return []
 
-        if self.backend == "colqwen2":
+        runtime_backend = self.active_backend or self.backend
+        if runtime_backend == "colqwen2":
             try:
                 q = self._encode_text_colqwen2(query)
             except Exception as exc:
-                logger.warning("ColQwen2 query encoding failed (%s), fallback to CLIP", exc)
-                self.backend = "clip"
+                logger.warning("ColQwen2 query encoding failed (%s); fallback to CLIP", exc)
+                self.active_backend = "clip"
                 q = self._encode_text_clip(query)
         else:
             q = self._encode_text_clip(query)
@@ -155,5 +173,4 @@ class VisualPageIndex:
         return [VisualHit(page_id=self.page_ids[i], score=float(scores[i])) for i in idxs if scores[i] > 0]
 
     def backend_info(self) -> str:
-        return self.backend
-
+        return self.active_backend or self.backend

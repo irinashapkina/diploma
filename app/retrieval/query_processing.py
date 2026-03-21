@@ -22,12 +22,25 @@ def normalize_and_expand_query(query: str) -> ProcessedQuery:
     forms = [query.strip(), normalized, normalized_retrieval]
 
     aliases = {
-        "ram": ["random access machine", "random access memory", "оперативная память"],
+        "ram": [
+            "random access machine",
+            "random access memory",
+            "оперативная память",
+            "память с произвольным доступом",
+        ],
+        "random access machine": ["ram", "random access memory"],
+        "random access memory": ["ram", "оперативная память"],
         "оперативная память": ["ram", "random access memory"],
-        "схема": ["diagram", "architecture", "scheme"],
+        "java": ["jav", "gava"],
+        "фон неймана": ["фон неимана", "von neumann", "neumann", "neiman"],
+        "фон неимана": ["фон неймана", "von neumann"],
+        "von neumann": ["фон неймана", "фон неимана", "neiman"],
+        "alu": ["arithmetic logic unit", "арифметико-логическое устройство"],
+        "stack": ["стек"],
+        "heap": ["куча"],
+        "схема": ["diagram", "architecture", "scheme", "layout"],
+        "архитектура": ["architecture", "diagram", "устройство"],
         "принцип работы": ["how it works", "workflow", "mechanism"],
-        "grammar": ["грамматика"],
-        "context-free": ["cf", "контекстно-свободная"],
     }
     q_low = normalized
     for key, vals in aliases.items():

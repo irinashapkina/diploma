@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.answering.prompts import build_grounded_prompt
 from app.answering.qwen_ollama import QwenVLAnswerer
+from app.answering.minicpm_helper import MiniCPMVHelper
 from app.indexing.bm25.index import BM25Index
 from app.indexing.dense.index import DenseTextIndex
 from app.indexing.store import ArtifactStore
@@ -25,6 +26,7 @@ class RAGPipeline:
             visual=VisualPageIndex(),
         )
         self.answerer = QwenVLAnswerer()
+        self.minicpm_helper = MiniCPMVHelper()
         self.validator = GroundingValidator()
 
     def ask(self, question: str, top_k: int = 6, debug: bool = False) -> AskResponse:
@@ -75,6 +77,10 @@ class RAGPipeline:
             )
 
         text_context, image_paths = self._assemble_context(candidates, mode=route.mode)
+        if route.mode in {"visual", "hybrid"}:
+            hints = self.minicpm_helper.extract_page_hints(image_paths)
+            if hints:
+                text_context = f"{text_context}\n\n[MiniCPM helper hints]\n" + "\n".join(hints[:6])
         prompt = build_grounded_prompt(mode=route.mode, question=question, text_context=text_context)
         answer = self.answerer.generate(prompt=prompt, image_paths=image_paths if route.mode != "text" else [])
         validation = self.validator.validate(answer=answer, context_items=candidates)

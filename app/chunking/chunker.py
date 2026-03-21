@@ -29,9 +29,10 @@ class TextChunker:
         return chunks
 
     def chunk_page(self, page: PageRecord) -> list[ChunkRecord]:
-        text = page.ocr_text_clean or ""
+        text = (page.merged_text or page.pdf_text_raw or page.ocr_text_clean or "").strip()
         blocks = self._split_into_blocks(text)
         merged_blocks = self._merge_small_blocks(blocks)
+        page_title = self._extract_page_title(text)
         out: list[ChunkRecord] = []
         for idx, block in enumerate(merged_blocks):
             cleaned = clean_ocr_text(block)
@@ -52,6 +53,16 @@ class TextChunker:
                     "has_diagram": page.has_diagram,
                     "has_table": page.has_table,
                     "has_code_like_text": page.has_code_like_text,
+                    "has_large_image": page.has_large_image,
+                    "text_source": page.text_source,
+                    "pdf_text_quality": page.pdf_text_quality,
+                    "ocr_text_quality": page.ocr_text_quality,
+                    "page_title": page_title,
+                    "page_has_diagram": page.has_diagram,
+                    "page_has_table": page.has_table,
+                    "page_has_code_like_text": page.has_code_like_text,
+                    "page_has_large_image": page.has_large_image,
+                    "maybe_visual_priority": bool(page.has_diagram or page.has_large_image),
                 },
                 image_path=page.image_path,
             )
@@ -102,3 +113,12 @@ class TextChunker:
             out.append(pending)
         return out
 
+    @staticmethod
+    def _extract_page_title(text: str) -> str:
+        for line in text.splitlines():
+            line = line.strip()
+            if len(line) < 4:
+                continue
+            if len(line) <= 120:
+                return line
+        return ""

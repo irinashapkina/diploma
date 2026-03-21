@@ -15,15 +15,28 @@ class QueryRouter:
         "схем",
         "рисунк",
         "диаграм",
+        "блок",
+        "стрелк",
         "на слайде",
         "на странице",
         "архитектур",
+        "устройств",
+        "картинк",
+        "объясни рисунок",
+        "объясни схему",
+        "что на диаграмме",
+        "что обозначают блоки",
         "что изображено",
         "как устроено",
+        "как связаны блоки",
         "what is shown",
+        "explain diagram",
+        "what is on the slide",
+        "what is in the picture",
         "diagram",
         "figure",
         "architecture",
+        "layout",
         "workflow",
     ]
     text_markers = [
@@ -46,6 +59,9 @@ class QueryRouter:
 
         if visual_hits >= 2:
             reasons.append("visual_markers>=2")
+            return RoutingDecision(mode="visual", reasons=reasons)
+        if visual_hits >= 1 and any(token in q for token in ["объясни", "поясни", "explain", "what is shown"]):
+            reasons.append("visual_explain_intent")
             return RoutingDecision(mode="visual", reasons=reasons)
         if visual_hits >= 1 and text_hits == 0:
             reasons.append("visual_marker_present")
