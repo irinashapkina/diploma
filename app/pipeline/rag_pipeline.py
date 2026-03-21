@@ -31,16 +31,16 @@ class RAGPipeline:
 
     def ask(self, question: str, top_k: int = 6, debug: bool = False) -> AskResponse:
         q = normalize_and_expand_query(question)
-        route = self.router.decide(q.normalized)
+        route = self.router.decide(q.normalized, processed_query=q)
         candidates, retrieval_debug = self.retriever.retrieve(
             query=question,
             mode=route.mode,
             top_k=top_k,
             query_forms=q.retrieval_forms,
         )
-        support = self.validator.assess_support(question=question, context_items=candidates)
+        support = self.validator.assess_support(question=question, context_items=candidates, processed_query=q)
 
-        if not support.has_support:
+        if not support.answer_allowed:
             low_support_answer = (
                 "Недостаточно данных в материалах преподавателя для уверенного ответа на этот вопрос. "
                 "Попробуйте уточнить формулировку или загрузить слайды с этой темой."
@@ -63,8 +63,16 @@ class RAGPipeline:
                     "retrieval": retrieval_debug,
                     "support": {
                         "has_support": support.has_support,
+                        "answer_allowed": support.answer_allowed,
                         "coverage": support.coverage,
                         "overlap_terms": support.overlap_terms,
+                        "question_intent": support.question_intent,
+                        "entities": support.entities,
+                        "normalized_relations": support.normalized_relations,
+                        "entity_coverage": support.entity_coverage,
+                        "relation_coverage": support.relation_coverage,
+                        "source_quality": support.source_quality,
+                        "supporting_facts": support.supporting_facts,
                         "reason": support.reason,
                     },
                 }
@@ -106,8 +114,16 @@ class RAGPipeline:
                 "context": {"text_context_preview": text_context[:2000], "images": image_paths},
                 "support": {
                     "has_support": support.has_support,
+                    "answer_allowed": support.answer_allowed,
                     "coverage": support.coverage,
                     "overlap_terms": support.overlap_terms,
+                    "question_intent": support.question_intent,
+                    "entities": support.entities,
+                    "normalized_relations": support.normalized_relations,
+                    "entity_coverage": support.entity_coverage,
+                    "relation_coverage": support.relation_coverage,
+                    "source_quality": support.source_quality,
+                    "supporting_facts": support.supporting_facts,
                     "reason": support.reason,
                 },
                 "validation": {

@@ -13,8 +13,10 @@ def test_query_expansion_contains_alias() -> None:
     assert "random access machine" in forms
     assert "random access memory" in forms
     assert "оперативная память" in forms
+    assert q.question_intent in {"mechanism", "explanation"}
 
 
 def test_router_visual_for_diagram_questions() -> None:
-    r = QueryRouter().decide("объясни схему архитектуры фон Неймана")
+    q = normalize_and_expand_query("объясни схему архитектуры фон Неймана")
+    r = QueryRouter().decide(q.normalized, processed_query=q)
     assert r.mode in {"visual", "hybrid"}

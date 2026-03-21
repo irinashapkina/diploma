@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from app.retrieval.query_processing import ProcessedQuery
+
 
 @dataclass
 class RoutingDecision:
@@ -50,12 +52,21 @@ class QueryRouter:
         "когда",
     ]
 
-    def decide(self, query: str) -> RoutingDecision:
+    def decide(self, query: str, processed_query: ProcessedQuery | None = None) -> RoutingDecision:
         q = query.lower().strip()
         reasons: list[str] = []
+        intent = processed_query.question_intent if processed_query else "general"
 
         visual_hits = sum(1 for m in self.visual_markers if m in q)
         text_hits = sum(1 for m in self.text_markers if m in q)
+        has_visual_entity = bool(processed_query and any(e in {"alu", "von_neumann"} for e in processed_query.entities))
+
+        if intent == "diagram_layout":
+            reasons.append("intent_diagram_layout")
+            return RoutingDecision(mode="visual", reasons=reasons)
+        if intent in {"comparison", "relation", "mechanism"} and (visual_hits >= 1 or has_visual_entity):
+            reasons.append("semantic_intent_with_visual_cues")
+            return RoutingDecision(mode="hybrid", reasons=reasons)
 
         if visual_hits >= 2:
             reasons.append("visual_markers>=2")

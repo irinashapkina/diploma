@@ -1,0 +1,29 @@
+{
+  "chunk_ids": [
+    "b6a533d9-d543-4d60-a118-f90e6ec56e51",
+    "27078bd5-0853-45c1-8a57-ba6b4c6d8910",
+    "780b1230-94e8-4a8d-aae3-e4d62ec76fbd",
+    "2eac5a04-0708-4ea7-ba08-a0e7c6ca877f",
+    "e91fd772-1c2c-43a7-8826-a406eee4a5d7",
+    "d55b2533-b142-449c-a373-88482ab84efd",
+    "68f0f987-9067-4acc-a7fd-47f96bf5f7cd",
+    "9b5b39cc-3047-4723-8ce2-0d2f0c15fb6f",
+    "f81ba903-fb46-458b-ab57-8a03e43f8781",
+    "2e876e32-6b51-4009-919f-52e271e4c24d",
+    "23117dff-cd8f-4a06-a1af-7881ac0b28d8",
+    "b056650e-b0a8-40ce-a225-ffe7ca6f0a50",
+    "f342967d-9714-47f3-b5f4-024ebb4e1ba8",
+    "b48a4c19-76ac-4d81-82d7-42210d9c334c",
+    "9b60f6e9-f971-48c6-a89c-f37c140a2276",
+    "b92f9a51-51eb-40a7-9791-746a3f22b0cf",
+    "9c271471-917e-45f3-8058-57b34aa3004b",
+    "35ee8a5d-337d-4e82-8943-c6209d6cdc30",
+    "b5074aa1-df0a-42ea-8dee-f3f7c2f64737",
+    "95917d07-628f-46fc-a15d-210e4c7f6579",
+    "02a25ca2-b3eb-45a5-a472-c86c136a31ba",
+    "c600fb01-e2ec-4ab1-a778-9f3e389b74a3",
+    "8552ffda-4109-489b-832f-a488e23efa2f"
+  ],
+  "model_name": "intfloat/multilingual-e5-base",
+  "backend": "numpy"
+}
