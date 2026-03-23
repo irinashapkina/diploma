@@ -34,6 +34,7 @@ class VisualPageIndex:
         self._clip_model: CLIPModel | None = None
         self._clip_processor: CLIPProcessor | None = None
         self._colqwen2 = None
+        self.embedding_dim: int | None = None
         logger.info(
             "Visual index configured: requested_backend=%s clip_model=%s colqwen2_model=%s",
             self.backend,
@@ -79,6 +80,7 @@ class VisualPageIndex:
             self.embeddings = self._build_clip_embeddings(self.image_paths)
 
         np.save(self.path_embeddings, self.embeddings)
+        self.embedding_dim = int(self.embeddings.shape[1]) if self.embeddings.ndim == 2 else None
         write_json(
             self.path_meta,
             {
@@ -86,6 +88,7 @@ class VisualPageIndex:
                 "image_paths": self.image_paths,
                 "backend": self.active_backend,
                 "requested_backend": requested,
+                "embedding_dim": self.embedding_dim,
             },
         )
         logger.info(
@@ -129,8 +132,11 @@ class VisualPageIndex:
             self.image_paths = meta.get("image_paths", [])
             self.active_backend = meta.get("backend", self.backend)
             self.backend = meta.get("requested_backend", self.backend)
+            self.embedding_dim = meta.get("embedding_dim")
         if self.path_embeddings.exists():
             self.embeddings = np.load(self.path_embeddings)
+            if self.embeddings.ndim == 2:
+                self.embedding_dim = int(self.embeddings.shape[1])
 
     def _encode_text_clip(self, query: str) -> np.ndarray:
         processor, model = self._load_clip()
@@ -168,9 +174,48 @@ class VisualPageIndex:
         else:
             q = self._encode_text_clip(query)
 
+        if self.embeddings.ndim != 2 or self.embeddings.shape[1] != q.shape[0]:
+            logger.warning(
+                "Visual embedding dimension mismatch: embeddings_shape=%s query_dim=%s backend=%s. "
+                "Trying to rebuild visual embeddings.",
+                getattr(self.embeddings, "shape", None),
+                q.shape[0],
+                runtime_backend,
+            )
+            if not self._rebuild_after_dim_mismatch(expected_dim=q.shape[0]):
+                logger.warning("Visual retrieval disabled for this request due to incompatible index state.")
+                return []
+
         scores = self.embeddings @ q
         idxs = np.argsort(scores)[::-1][:top_k]
         return [VisualHit(page_id=self.page_ids[i], score=float(scores[i])) for i in idxs if scores[i] > 0]
 
     def backend_info(self) -> str:
         return self.active_backend or self.backend
+
+    def _rebuild_after_dim_mismatch(self, expected_dim: int) -> bool:
+        if not self.image_paths:
+            return False
+        try:
+            self.active_backend = "clip"
+            rebuilt = self._build_clip_embeddings(self.image_paths)
+            if rebuilt.ndim != 2 or rebuilt.shape[1] != expected_dim:
+                return False
+            self.embeddings = rebuilt
+            self.embedding_dim = int(rebuilt.shape[1])
+            np.save(self.path_embeddings, self.embeddings)
+            write_json(
+                self.path_meta,
+                {
+                    "page_ids": self.page_ids,
+                    "image_paths": self.image_paths,
+                    "backend": self.active_backend,
+                    "requested_backend": self.backend,
+                    "embedding_dim": self.embedding_dim,
+                },
+            )
+            logger.info("Visual embeddings rebuilt with dim=%s", self.embedding_dim)
+            return True
+        except Exception as exc:  # pragma: no cover - runtime/deps dependent
+            logger.warning("Failed to rebuild visual embeddings after dim mismatch: %s", exc)
+            return False

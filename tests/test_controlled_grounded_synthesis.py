@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from app.answering.answer_shaper import build_controlled_synthesis_prompt
 from app.answering.fact_extractor import extract_structured_facts
+from app.pipeline.rag_pipeline import RAGPipeline
 from app.retrieval.query_processing import normalize_and_expand_query
 from app.retrieval.sense_disambiguation import disambiguate_entities
 from app.schemas.models import RetrievalCandidate
 from app.validation.confidence import estimate_confidence
-from app.validation.grounding import GroundingValidator
+from app.validation.grounding import GroundingValidator, SupportAssessment
 
 
 def _cand(
@@ -114,3 +115,66 @@ def test_confidence_drops_for_noisy_extraction_or_refusal() -> None:
     )
     assert confidence < 0.5
     assert breakdown["quality_facts"] <= 0.2
+
+
+def test_pipeline_diagram_elements_non_empty_with_empty_llm_answer(monkeypatch) -> None:
+    pipeline = RAGPipeline()
+    candidates = [
+        _cand("v1", "Random Access Machine (1960е)", source_type="visual", has_diagram=True, score=0.51),
+        _cand(
+            "v2",
+            "входная read-only лента, выходная write-only лента, ALU, Control Unit",
+            source_type="visual",
+            has_diagram=True,
+            score=0.49,
+            page=4,
+        ),
+        _cand("t3", "Random Access Memory — Оперативная память.", score=0.42, page=4),
+    ]
+
+    monkeypatch.setattr(
+        pipeline.retriever,
+        "retrieve",
+        lambda **kwargs: (candidates, {"final_candidates": []}),
+    )
+    monkeypatch.setattr(pipeline.answerer, "generate", lambda prompt, image_paths, system_prompt=None: "")
+    monkeypatch.setattr(
+        pipeline.validator,
+        "assess_support",
+        lambda question, context_items, processed_query=None: SupportAssessment(
+            has_support=True,
+            answer_allowed=True,
+            coverage=0.6,
+            overlap_terms=["ram", "схеме"],
+            question_intent="diagram_elements",
+            entities=["ram_machine"],
+            normalized_relations=["diagram_elements"],
+            entity_coverage=1.0,
+            relation_coverage=1.0,
+            source_quality=0.8,
+            supporting_facts=["входная read-only лента", "выходная write-only лента", "alu", "control unit"],
+            reason="diagram_supported",
+        ),
+    )
+
+    resp = pipeline.ask("какие элементы есть у Random Access Machine на схеме", debug=True)
+    assert resp.answer.strip() != ""
+    assert ("read-only" in resp.answer.lower()) or ("write-only" in resp.answer.lower())
+    assert "оперативная память" not in " ".join(f["source_phrase"] for f in resp.debug["structured_facts"]).lower()
+
+
+def test_confidence_is_strongly_capped_for_empty_answer() -> None:
+    q = normalize_and_expand_query("какие элементы есть у Random Access Machine на схеме")
+    candidates = [_cand("v1", "ALU, Control Unit, read-only tape", source_type="visual", has_diagram=True, score=0.9)]
+    facts_result = extract_structured_facts(q, candidates, selected_sense={"ram": "ram_machine"})
+    validator = GroundingValidator()
+    validation = validator.validate("", candidates)
+    confidence, _ = estimate_confidence(
+        answer="",
+        candidates=candidates,
+        validation=validation,
+        mode="visual",
+        facts_result=facts_result,
+        answer_mode="grounded_synthesis",
+    )
+    assert confidence <= 0.15

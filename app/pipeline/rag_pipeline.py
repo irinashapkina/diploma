@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.answering.answer_shaper import build_controlled_synthesis_prompt
+from app.answering.answer_shaper import build_controlled_synthesis_prompt, build_fallback_answer_from_facts
 from app.answering.fact_extractor import extract_structured_facts
 from app.answering.prompts import build_grounded_prompt
 from app.answering.qwen_ollama import QwenVLAnswerer
@@ -51,6 +51,45 @@ class RAGPipeline:
             candidates=candidates,
             selected_sense=sense_decision.selected_sense,
         )
+        used_support_fallback_facts = False
+        if support.has_support and len(facts_result.facts) < 2 and support.supporting_facts:
+            pseudo_candidates = [
+                RetrievalCandidate(
+                    candidate_id=f"support:{idx}",
+                    source_type="text",
+                    score=max(0.12, candidates[0].score * 0.55 if candidates else 0.15),
+                    document_id=candidates[0].document_id if candidates else "support",
+                    document_title=candidates[0].document_title if candidates else "support",
+                    page_id=f"support_p{idx}",
+                    page_number=candidates[0].page_number if candidates else 0,
+                    text=fact,
+                    image_path=None,
+                    debug={"from_supporting_facts": True, "has_diagram": True if q.question_intent.startswith("diagram") else False},
+                )
+                for idx, fact in enumerate(support.supporting_facts[:6], start=1)
+            ]
+            fallback_facts = extract_structured_facts(
+                processed_query=q,
+                candidates=pseudo_candidates,
+                selected_sense=sense_decision.selected_sense,
+            )
+            if fallback_facts.facts:
+                merged = facts_result.facts + fallback_facts.facts
+                seen: set[str] = set()
+                dedup = []
+                for fact in merged:
+                    key = f"{fact.entity}|{fact.attribute}|{fact.source_phrase.lower()}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    dedup.append(fact)
+                facts_result.facts = dedup[:12]
+                facts_result.rejected_fragments.extend(fallback_facts.rejected_fragments[:8])
+                facts_result.contributing_sources = sorted(
+                    set(facts_result.contributing_sources) | set(fallback_facts.contributing_sources)
+                )
+                facts_result.multi_source_fulfilled = len(facts_result.contributing_sources) >= 2 if facts_result.likely_multi_source else True
+                used_support_fallback_facts = True
 
         if not support.answer_allowed and not facts_result.facts:
             low_support_answer = (
@@ -141,6 +180,9 @@ class RAGPipeline:
             image_paths=image_paths if route.mode != "text" else [],
             system_prompt="Строго придерживайся source-фактов. Не добавляй внешние знания.",
         )
+        llm_answer_empty = not answer.strip()
+        if llm_answer_empty:
+            answer = build_fallback_answer_from_facts(processed_query=q, facts_result=facts_result)
         validation = self.validator.validate(answer=answer, context_items=candidates)
         safe_answer = self.validator.enforce(answer=answer, validation=validation)
         confidence, conf_breakdown = estimate_confidence(
@@ -180,6 +222,8 @@ class RAGPipeline:
                 "likely_multi_source": facts_result.likely_multi_source,
                 "multi_source_fulfilled": facts_result.multi_source_fulfilled,
                 "answer_mode": shaping_plan.answer_mode,
+                "used_support_fallback_facts": used_support_fallback_facts,
+                "llm_answer_empty": llm_answer_empty,
                 "support": {
                     "has_support": support.has_support,
                     "answer_allowed": support.answer_allowed,

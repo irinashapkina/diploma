@@ -68,6 +68,10 @@ def estimate_confidence(
         - refusal_penalty
     )
     score = max(0.0, min(1.0, conf))
+    if not text_answer:
+        score = min(score, 0.15)
+    elif "недостаточно данных" in text_answer.lower():
+        score = min(score, 0.35)
     breakdown = {
         "retrieval_quality": round(retrieval_quality, 4),
         "consistency": round(consistency, 4),

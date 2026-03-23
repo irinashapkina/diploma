@@ -8,8 +8,41 @@ from app.schemas.models import RetrievalCandidate
 from app.utils.text import normalize_text
 
 _SPLIT_RE = re.compile(r"[;\n\.!?]+")
+_LIST_SPLIT_RE = re.compile(r"[,\|/]|->|→|—")
 _NOISE_RE = re.compile(r"^[\d\W_]+$")
 _PAGE_RE = re.compile(r"^\s*(page|стр|слайд)\s*\d+\s*$", re.IGNORECASE)
+_DIAGRAM_LABEL_HINTS = (
+    "read-only",
+    "write-only",
+    "input",
+    "output",
+    "tape",
+    "unit",
+    "alu",
+    "control",
+    "memory",
+    "register",
+    "аккумулятор",
+    "лента",
+    "вход",
+    "выход",
+    "блок",
+)
+_RAM_MACHINE_MARKERS = (
+    "random access machine",
+    "машина с произвольным доступом",
+    "alu",
+    "control unit",
+    "read-only",
+    "write-only",
+    "лента",
+)
+_RAM_MEMORY_MARKERS = (
+    "random access memory",
+    "оперативная память",
+    "озу",
+    "ячейка памяти",
+)
 
 
 @dataclass
@@ -52,14 +85,18 @@ def extract_structured_facts(
     for cand in candidates[:8]:
         fragments = _split_fragments(cand.text or "")
         for fragment in fragments:
-            if _is_bad_fragment(fragment):
+            if _is_bad_fragment(fragment, processed_query, cand):
                 rejected.append(fragment[:120])
+                continue
+            if _sense_conflict(fragment, processed_query, selected_sense):
+                rejected.append(f"[sense_conflict] {fragment[:100]}")
                 continue
             if not _fragment_relevant(fragment, processed_query):
                 continue
-            fact = _build_fact(fragment, cand, processed_query, selected_sense)
-            if fact:
-                facts.append(fact)
+            for prepared in _expand_fragment_for_intent(fragment, processed_query):
+                fact = _build_fact(prepared, cand, processed_query, selected_sense)
+                if fact:
+                    facts.append(fact)
 
     facts = _deduplicate_facts(facts)
     facts = _shape_facts_by_intent(facts, processed_query)
@@ -83,19 +120,25 @@ def _split_fragments(text: str) -> list[str]:
     return out
 
 
-def _is_bad_fragment(fragment: str) -> bool:
+def _is_bad_fragment(fragment: str, pq: ProcessedQuery, cand: RetrievalCandidate) -> bool:
     low = fragment.lower().strip()
-    if len(low) < 20:
+    if _PAGE_RE.match(low):
+        return True
+    if pq.question_intent in {"diagram_elements", "diagram_explanation"}:
+        if _is_diagram_label(fragment, cand):
+            return False
+        if len(low) < 6:
+            return True
+    elif len(low) < 20:
         return True
     if _NOISE_RE.match(low):
         return True
-    if _PAGE_RE.match(low):
-        return True
     digits_ratio = sum(ch.isdigit() for ch in low) / max(1, len(low))
-    if digits_ratio > 0.35:
+    if digits_ratio > 0.35 and pq.question_intent not in {"diagram_elements", "diagram_explanation"}:
         return True
     letters = sum(ch.isalpha() for ch in low)
-    if letters < 10:
+    min_letters = 3 if pq.question_intent in {"diagram_elements", "diagram_explanation"} else 10
+    if letters < min_letters:
         return True
     return False
 
@@ -109,7 +152,7 @@ def _fragment_relevant(fragment: str, pq: ProcessedQuery) -> bool:
     if pq.question_intent in {"comparison", "composition"}:
         return ent_hit or rel_hit or ("," in fragment and len(fragment.split()) >= 4)
     if pq.question_intent in {"diagram_elements", "diagram_explanation"}:
-        return ent_hit or rel_hit or any(k in txt for k in ["блок", "архитектур", "unit", "memory", "control"])
+        return ent_hit or rel_hit or any(k in txt for k in _DIAGRAM_LABEL_HINTS) or _looks_like_label_row(fragment)
     return ent_hit or rel_hit
 
 
@@ -181,6 +224,8 @@ def _deduplicate_facts(facts: list[StructuredFact]) -> list[StructuredFact]:
 
 def _shape_facts_by_intent(facts: list[StructuredFact], pq: ProcessedQuery) -> list[StructuredFact]:
     if pq.question_intent != "comparison":
+        if pq.question_intent in {"diagram_elements", "diagram_explanation"}:
+            return _prioritize_diagram_facts(facts)
         return facts
     by_entity: dict[str, StructuredFact] = {}
     for fact in facts:
@@ -190,3 +235,65 @@ def _shape_facts_by_intent(facts: list[StructuredFact], pq: ProcessedQuery) -> l
     if len(selected) >= 2:
         return selected[:4]
     return facts
+
+
+def _expand_fragment_for_intent(fragment: str, pq: ProcessedQuery) -> list[str]:
+    if pq.question_intent not in {"diagram_elements", "diagram_explanation"}:
+        return [fragment]
+    if not _looks_like_label_row(fragment):
+        return [fragment]
+    parts = [re.sub(r"\s+", " ", p).strip(" -:\t") for p in _LIST_SPLIT_RE.split(fragment)]
+    prepared = [p for p in parts if p and len(p) >= 3 and not _NOISE_RE.match(p)]
+    if not prepared:
+        return [fragment]
+    return prepared
+
+
+def _looks_like_label_row(fragment: str) -> bool:
+    txt = normalize_text(fragment)
+    return (
+        any(sep in fragment for sep in [",", "|", "->", "→", "/"])
+        or any(h in txt for h in _DIAGRAM_LABEL_HINTS)
+        or len(fragment.split()) <= 6
+    )
+
+
+def _is_diagram_label(fragment: str, cand: RetrievalCandidate) -> bool:
+    txt = normalize_text(fragment)
+    if cand.source_type == "visual" and len(txt) >= 5 and any(ch.isalpha() for ch in txt):
+        if any(h in txt for h in _DIAGRAM_LABEL_HINTS):
+            return True
+        if _looks_like_label_row(fragment):
+            return True
+    return False
+
+
+def _sense_conflict(fragment: str, pq: ProcessedQuery, selected_sense: dict[str, str]) -> bool:
+    txt = normalize_text(fragment)
+    if "ram_machine" in pq.entities and any(marker in txt for marker in _RAM_MEMORY_MARKERS):
+        return True
+    if "ram_memory" in pq.entities and any(marker in txt for marker in _RAM_MACHINE_MARKERS):
+        return True
+    for ent, sense in selected_sense.items():
+        if ent != "ram":
+            continue
+        if sense == "ram_machine":
+            if any(marker in txt for marker in _RAM_MEMORY_MARKERS) and not any(marker in txt for marker in _RAM_MACHINE_MARKERS):
+                return True
+        if sense == "ram_memory":
+            if any(marker in txt for marker in _RAM_MACHINE_MARKERS) and not any(marker in txt for marker in _RAM_MEMORY_MARKERS):
+                return True
+    return False
+
+
+def _prioritize_diagram_facts(facts: list[StructuredFact]) -> list[StructuredFact]:
+    scored = sorted(
+        facts,
+        key=lambda f: (
+            1 if any(h in normalize_text(f.source_phrase) for h in _DIAGRAM_LABEL_HINTS) else 0,
+            1 if len(f.source_phrase.split()) <= 6 else 0,
+            f.score,
+        ),
+        reverse=True,
+    )
+    return scored

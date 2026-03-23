@@ -74,3 +74,14 @@ def test_visual_backend_colqwen2_fallback(monkeypatch) -> None:
     monkeypatch.setattr(v, "_build_clip_embeddings", lambda image_paths: np.ones((len(image_paths), 8), dtype=np.float32))
     v.build([_make_page()])
     assert v.backend_info() == "clip"
+
+
+def test_visual_search_dim_mismatch_does_not_crash(monkeypatch) -> None:
+    v = VisualPageIndex(backend="clip")
+    v.page_ids = ["doc1_p1"]
+    v.image_paths = ["/tmp/fake.png"]
+    v.embeddings = np.ones((1, 8), dtype=np.float32)
+    monkeypatch.setattr(v, "_encode_text_clip", lambda query: np.ones((512,), dtype=np.float32))
+    monkeypatch.setattr(v, "_rebuild_after_dim_mismatch", lambda expected_dim: False)
+    hits = v.search("what is on diagram", top_k=3)
+    assert hits == []

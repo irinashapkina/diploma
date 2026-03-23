@@ -72,3 +72,33 @@ def _has_direct_answer_shape(facts: list[StructuredFact], question_intent: str) 
     if question_intent == "attribute_lookup":
         return any(("хран" in f.source_phrase.lower() or "contains" in f.source_phrase.lower()) for f in facts[:3])
     return False
+
+
+def build_fallback_answer_from_facts(processed_query: ProcessedQuery, facts_result: FactExtractionResult) -> str:
+    facts = facts_result.facts[:8]
+    if not facts:
+        return "Недостаточно данных в материалах для полного ответа."
+    if processed_query.question_intent == "diagram_elements":
+        labels = _unique_phrases([f.source_phrase for f in facts])
+        return "На схеме показаны: " + ", ".join(labels[:8]) + "."
+    if processed_query.question_intent == "comparison":
+        phrases = _unique_phrases([f.source_phrase for f in facts])
+        if len(phrases) >= 2:
+            return f"По материалам: {phrases[0]}, а также {phrases[1]}."
+    if processed_query.question_intent == "composition":
+        phrases = _unique_phrases([f.source_phrase for f in facts])
+        return "По материалам, в состав входят: " + ", ".join(phrases[:6]) + "."
+    return "По материалам: " + "; ".join(_unique_phrases([f.source_phrase for f in facts])[:4]) + "."
+
+
+def _unique_phrases(phrases: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for phrase in phrases:
+        p = " ".join(phrase.split()).strip(" ,.;:")
+        key = p.lower()
+        if not p or key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
