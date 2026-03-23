@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from app.answering.fact_extractor import extract_structured_facts
 from app.retrieval.query_processing import normalize_and_expand_query
+from app.retrieval.sense_disambiguation import disambiguate_entities
 from app.schemas.models import RetrievalCandidate
+from app.validation.confidence import estimate_confidence
 from app.validation.grounding import GroundingValidator
 
 
@@ -48,7 +51,7 @@ def test_intent_comparison_mixed_ru_en() -> None:
 
 def test_intent_mechanism() -> None:
     q = normalize_and_expand_query("как работает архитектура фон Неймана")
-    assert q.question_intent in {"mechanism", "diagram_layout"}
+    assert q.question_intent in {"diagram_explanation", "composition"}
     assert "von_neumann" in q.entities
 
 
@@ -81,7 +84,7 @@ def test_support_diagram_question_with_visual_evidence() -> None:
     ]
     support = validator.assess_support(question=q.original, context_items=context, processed_query=q)
     assert support.answer_allowed is True
-    assert support.question_intent == "diagram_layout"
+    assert support.question_intent in {"diagram_explanation", "diagram_elements"}
 
 
 def test_support_paraphrase_ru_en() -> None:
@@ -109,3 +112,50 @@ def test_negative_insufficient_support() -> None:
     context = [_cand("c1", "Java byte это 8 бит и диапазон значений ограничен.", score=0.09)]
     support = validator.assess_support(question=q.original, context_items=context, processed_query=q)
     assert support.answer_allowed is False
+
+
+def test_ram_disambiguation_prefers_machine_when_diagram_context() -> None:
+    q = normalize_and_expand_query("какие элементы есть у Random Access Machine на схеме")
+    if "ram" not in q.entities:
+        q.entities.append("ram")
+    decision = disambiguate_entities(q)
+    assert decision.selected_sense.get("ram") == "ram_machine"
+
+
+def test_stack_heap_fact_extraction_keeps_source_wording() -> None:
+    q = normalize_and_expand_query("что хранится в стеке и что хранится в куче")
+    context = [
+        _cand("c1", "Стек хранит переменные примитивного типа."),
+        _cand("c2", "Куча содержит данные ссылочного типа."),
+    ]
+    facts = extract_structured_facts(q, context).facts
+    phrases = " ".join(f.source_phrase for f in facts).lower()
+    assert "данные ссылочного типа" in phrases
+    assert "примитивного типа" in phrases
+
+
+def test_confidence_penalizes_empty_and_refusal_answers() -> None:
+    q = normalize_and_expand_query("чем стек отличается от кучи")
+    context = [_cand("c1", "Стек хранит переменные примитивного типа.", score=0.42)]
+    facts_result = extract_structured_facts(q, context)
+    validator = GroundingValidator()
+    empty_validation = validator.validate("", context)
+    empty_conf, _ = estimate_confidence(
+        answer="",
+        candidates=context,
+        validation=empty_validation,
+        mode="text",
+        facts_result=facts_result,
+        answer_mode="partial_answer",
+    )
+    refusal_validation = validator.validate("Недостаточно данных в материалах.", context)
+    refusal_conf, _ = estimate_confidence(
+        answer="Недостаточно данных в материалах.",
+        candidates=context,
+        validation=refusal_validation,
+        mode="text",
+        facts_result=facts_result,
+        answer_mode="partial_answer",
+    )
+    assert empty_conf < 0.35
+    assert refusal_conf < 0.45

@@ -10,7 +10,7 @@ from app.retrieval.query_processing import (
     normalize_and_expand_query,
 )
 from app.schemas.models import RetrievalCandidate
-from app.utils.text import tokenize_mixed
+from app.utils.text import normalize_for_retrieval, normalize_text, tokenize_mixed
 
 _re_nums = re.compile(r"\b\d{1,4}\b")
 _STOPWORDS = {
@@ -101,6 +101,7 @@ class GroundingValidator:
 
         comparison_supported = self._comparison_supported(pq, context_items)
         diagram_supported = self._diagram_supported(pq, context_items)
+        composition_supported = self._composition_supported(pq, context_items)
         literal_support = coverage >= 0.26 and top_score >= 0.10 and len(overlap_terms) >= 1
         has_semantic_signals = bool(pq.entities) or bool(pq.normalized_relations)
         semantic_support = has_semantic_signals and entity_coverage >= 0.5 and (
@@ -110,7 +111,7 @@ class GroundingValidator:
             top_score >= 0.22 and entity_coverage >= 0.5 and len(supporting_facts) >= 1 and source_quality >= 0.28
         )
 
-        has_support = literal_support or semantic_support or comparison_supported or diagram_supported
+        has_support = literal_support or semantic_support or comparison_supported or diagram_supported or composition_supported
         answer_allowed = has_support or strong_retrieval_support
 
         reason = "semantic_ok"
@@ -118,6 +119,8 @@ class GroundingValidator:
             reason = "comparison_supported"
         elif diagram_supported:
             reason = "diagram_supported"
+        elif composition_supported:
+            reason = "composition_supported"
         elif literal_support and not semantic_support:
             reason = "literal_ok"
         elif strong_retrieval_support and not has_support:
@@ -172,7 +175,7 @@ class GroundingValidator:
         hits: list[str] = []
         for entity in entities:
             aliases = ENTITY_ALIASES.get(entity, [entity])
-            if any(alias in context_text for alias in aliases):
+            if any(_contains_alias(context_text, alias) for alias in aliases):
                 hits.append(entity)
         return hits
 
@@ -181,7 +184,7 @@ class GroundingValidator:
         hits: list[str] = []
         for relation in relations:
             aliases = RELATION_ALIASES.get(relation, [relation])
-            if any(alias in context_text for alias in aliases):
+            if any(_contains_alias(context_text, alias) for alias in aliases):
                 hits.append(relation)
         return hits
 
@@ -203,10 +206,10 @@ class GroundingValidator:
             has_entity = False
             for ent in entities:
                 aliases = ENTITY_ALIASES.get(ent, [ent])
-                if any(alias in txt for alias in aliases):
+                if any(_contains_alias(txt, alias) for alias in aliases):
                     has_entity = True
                     break
-            has_relation = not relations or any(alias in txt for alias in relation_aliases)
+            has_relation = not relations or any(_contains_alias(txt, alias) for alias in relation_aliases)
             if has_entity and has_relation:
                 facts.append(txt[:220])
             elif has_entity and len(txt) > 40:
@@ -222,17 +225,24 @@ class GroundingValidator:
             txt = (cand.text or "").lower()
             for ent in pq.entities:
                 aliases = ENTITY_ALIASES.get(ent, [ent])
-                if any(alias in txt for alias in aliases):
+                if any(_contains_alias(txt, alias) for alias in aliases):
                     matched_entities.add(ent)
         return len(matched_entities) >= 2
 
     @staticmethod
     def _diagram_supported(pq: ProcessedQuery, context_items: list[RetrievalCandidate]) -> bool:
-        if pq.question_intent != "diagram_layout":
+        if pq.question_intent not in {"diagram_elements", "diagram_explanation"}:
             return False
         has_visual = any(c.source_type == "visual" for c in context_items[:5])
         has_diagram_flag = any(bool(c.debug.get("has_diagram", False)) for c in context_items[:5])
         return has_visual or has_diagram_flag
+
+    @staticmethod
+    def _composition_supported(pq: ProcessedQuery, context_items: list[RetrievalCandidate]) -> bool:
+        if pq.question_intent != "composition":
+            return False
+        tokens = ("состоит", "входит", "компонент", "contains", "consists")
+        return any(any(tok in (c.text or "").lower() for tok in tokens) for c in context_items[:6])
 
     @staticmethod
     def _estimate_source_quality(context_items: list[RetrievalCandidate]) -> float:
@@ -249,3 +259,17 @@ class GroundingValidator:
             score = 0.55 * source_prior + 0.3 * pdf_q + 0.15 * ocr_q
             values.append(max(0.0, min(1.0, score)))
         return sum(values) / max(1, len(values))
+
+
+def _contains_alias(context_text: str, alias: str) -> bool:
+    context_norm = normalize_text(context_text)
+    alias_norm = normalize_text(alias)
+    if alias_norm and alias_norm in context_norm:
+        return True
+    context_stem = normalize_for_retrieval(context_norm)
+    alias_stem = normalize_for_retrieval(alias_norm)
+    if alias_stem and alias_stem in context_stem:
+        return True
+    alias_tokens = [t for t in alias_stem.split() if t]
+    context_tokens = set(context_stem.split())
+    return bool(alias_tokens) and all(t in context_tokens for t in alias_tokens)

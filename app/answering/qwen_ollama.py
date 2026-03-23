@@ -26,7 +26,11 @@ class QwenVLAnswerer:
             encoded.append(base64.b64encode(path.read_bytes()).decode("utf-8"))
         return encoded
 
-    def generate(self, prompt: str, image_paths: list[str] | None = None) -> str:
+    def generate(self, prompt: str, image_paths: list[str] | None = None, system_prompt: str | None = None) -> str:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
         payload = {
             "model": self.model,
             "stream": False,
@@ -34,10 +38,10 @@ class QwenVLAnswerer:
                 "temperature": settings.answer_temperature,
                 "num_predict": settings.answer_max_tokens,
             },
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
         }
         if image_paths:
-            payload["messages"][0]["images"] = self._encode_images(image_paths)
+            payload["messages"][-1]["images"] = self._encode_images(image_paths)
 
         try:
             response = requests.post(
@@ -51,4 +55,3 @@ class QwenVLAnswerer:
         except Exception as exc:  # pragma: no cover - runtime/network dependency
             logger.exception("Ollama call failed: %s", exc)
             return "Не удалось получить ответ от модели. Проверьте запущен ли Ollama с Qwen2.5-VL."
-

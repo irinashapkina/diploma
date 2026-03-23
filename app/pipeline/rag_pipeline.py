@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.answering.answer_shaper import build_controlled_synthesis_prompt
+from app.answering.fact_extractor import extract_structured_facts
 from app.answering.prompts import build_grounded_prompt
 from app.answering.qwen_ollama import QwenVLAnswerer
 from app.answering.minicpm_helper import MiniCPMVHelper
@@ -9,6 +11,7 @@ from app.indexing.store import ArtifactStore
 from app.indexing.visual.index import VisualPageIndex
 from app.retrieval.hybrid import HybridRetriever
 from app.retrieval.query_processing import normalize_and_expand_query
+from app.retrieval.sense_disambiguation import disambiguate_entities
 from app.routing.router import QueryRouter
 from app.schemas.models import AskResponse, RetrievalCandidate, SourceItem
 from app.validation.confidence import estimate_confidence
@@ -31,19 +34,37 @@ class RAGPipeline:
 
     def ask(self, question: str, top_k: int = 6, debug: bool = False) -> AskResponse:
         q = normalize_and_expand_query(question)
+        sense_decision = disambiguate_entities(q)
+        query_forms = list(q.retrieval_forms)
+        for selected in sense_decision.selected_sense.values():
+            query_forms.append(selected.replace("_", " "))
         route = self.router.decide(q.normalized, processed_query=q)
         candidates, retrieval_debug = self.retriever.retrieve(
             query=question,
             mode=route.mode,
             top_k=top_k,
-            query_forms=q.retrieval_forms,
+            query_forms=query_forms,
         )
         support = self.validator.assess_support(question=question, context_items=candidates, processed_query=q)
+        facts_result = extract_structured_facts(
+            processed_query=q,
+            candidates=candidates,
+            selected_sense=sense_decision.selected_sense,
+        )
 
-        if not support.answer_allowed:
+        if not support.answer_allowed and not facts_result.facts:
             low_support_answer = (
                 "Недостаточно данных в материалах преподавателя для уверенного ответа на этот вопрос. "
                 "Попробуйте уточнить формулировку или загрузить слайды с этой темой."
+            )
+            conf, conf_breakdown = estimate_confidence(
+                answer=low_support_answer,
+                candidates=candidates,
+                validation=self.validator.validate(answer=low_support_answer, context_items=candidates),
+                mode=route.mode,
+                facts_result=facts_result,
+                sense_decision=sense_decision,
+                answer_mode="partial_answer",
             )
             sources = [
                 SourceItem(
@@ -60,7 +81,16 @@ class RAGPipeline:
                 debug_payload = {
                     "router": {"mode": route.mode, "reasons": route.reasons},
                     "query": q.__dict__,
+                    "selected_sense": sense_decision.selected_sense,
+                    "sense_ambiguity": sense_decision.ambiguity,
+                    "sense_reasons": sense_decision.reasons,
                     "retrieval": retrieval_debug,
+                    "expected_answer_shape": q.expected_answer_shape,
+                    "structured_facts": [],
+                    "rejected_bad_facts": facts_result.rejected_fragments,
+                    "contributing_sources": [],
+                    "answer_mode": "partial_answer",
+                    "confidence_breakdown": conf_breakdown,
                     "support": {
                         "has_support": support.has_support,
                         "answer_allowed": support.answer_allowed,
@@ -78,7 +108,7 @@ class RAGPipeline:
                 }
             return AskResponse(
                 answer=low_support_answer,
-                confidence=0.2,
+                confidence=round(conf, 3),
                 mode=route.mode,
                 sources=sources,
                 debug=debug_payload,
@@ -89,11 +119,39 @@ class RAGPipeline:
             hints = self.minicpm_helper.extract_page_hints(image_paths)
             if hints:
                 text_context = f"{text_context}\n\n[MiniCPM helper hints]\n" + "\n".join(hints[:6])
-        prompt = build_grounded_prompt(mode=route.mode, question=question, text_context=text_context)
-        answer = self.answerer.generate(prompt=prompt, image_paths=image_paths if route.mode != "text" else [])
+        shaping_plan = build_controlled_synthesis_prompt(
+            question=question,
+            processed_query=q,
+            facts_result=facts_result,
+            selected_sense=sense_decision.selected_sense,
+        )
+        synthesis_prompt = shaping_plan.prompt
+        if shaping_plan.answer_mode == "partial_answer":
+            prompt = synthesis_prompt
+        else:
+            prompt = (
+                f"{synthesis_prompt}\n\n"
+                f"Дополнительный retrieval context:\n{text_context}\n\n"
+                f"Вопрос: {question}\n"
+            )
+        fallback_prompt = build_grounded_prompt(mode=route.mode, question=question, text_context=text_context)
+        prompt = f"{prompt}\n\n[Fallback grounded context]\n{fallback_prompt}"
+        answer = self.answerer.generate(
+            prompt=prompt,
+            image_paths=image_paths if route.mode != "text" else [],
+            system_prompt="Строго придерживайся source-фактов. Не добавляй внешние знания.",
+        )
         validation = self.validator.validate(answer=answer, context_items=candidates)
         safe_answer = self.validator.enforce(answer=answer, validation=validation)
-        confidence = estimate_confidence(candidates=candidates, validation=validation, mode=route.mode)
+        confidence, conf_breakdown = estimate_confidence(
+            answer=safe_answer,
+            candidates=candidates,
+            validation=validation,
+            mode=route.mode,
+            facts_result=facts_result,
+            sense_decision=sense_decision,
+            answer_mode=shaping_plan.answer_mode,
+        )
 
         sources = [
             SourceItem(
@@ -110,8 +168,18 @@ class RAGPipeline:
             debug_payload = {
                 "router": {"mode": route.mode, "reasons": route.reasons},
                 "query": q.__dict__,
+                "selected_sense": sense_decision.selected_sense,
+                "sense_ambiguity": sense_decision.ambiguity,
+                "sense_reasons": sense_decision.reasons,
+                "expected_answer_shape": q.expected_answer_shape,
                 "retrieval": retrieval_debug,
                 "context": {"text_context_preview": text_context[:2000], "images": image_paths},
+                "structured_facts": [f.__dict__ for f in facts_result.facts],
+                "rejected_bad_facts": facts_result.rejected_fragments,
+                "contributing_sources": facts_result.contributing_sources,
+                "likely_multi_source": facts_result.likely_multi_source,
+                "multi_source_fulfilled": facts_result.multi_source_fulfilled,
+                "answer_mode": shaping_plan.answer_mode,
                 "support": {
                     "has_support": support.has_support,
                     "answer_allowed": support.answer_allowed,
@@ -131,6 +199,7 @@ class RAGPipeline:
                     "grounded_ratio": validation.grounded_ratio,
                     "partial": validation.partial,
                 },
+                "confidence_breakdown": conf_breakdown,
             }
         return AskResponse(
             answer=safe_answer,

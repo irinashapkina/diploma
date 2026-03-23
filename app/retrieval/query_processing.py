@@ -7,20 +7,20 @@ from app.utils.text import extract_keywords, normalize_for_retrieval, normalize_
 
 INTENT_VALUES = (
     "definition",
-    "explanation",
     "attribute_lookup",
     "comparison",
-    "relation",
-    "mechanism",
-    "diagram_layout",
-    "yes_no",
+    "composition",
+    "diagram_elements",
+    "diagram_explanation",
     "general",
 )
 
 ENTITY_ALIASES: dict[str, list[str]] = {
     "stack": ["stack", "стек"],
     "heap": ["heap", "куча"],
-    "ram": ["ram", "random access memory", "оперативная память", "random access machine"],
+    "ram": ["ram"],
+    "ram_machine": ["random access machine", "random-access machine", "машина с произвольным доступом"],
+    "ram_memory": ["random access memory", "оперативная память", "озу"],
     "java": ["java", "jav", "gava"],
     "boolean": ["boolean", "логический тип", "bool"],
     "alu": ["alu", "arithmetic logic unit", "арифметико-логическое устройство"],
@@ -35,28 +35,30 @@ RELATION_ALIASES: dict[str, list[str]] = {
     "definition": ["что такое", "означает", "define", "definition", "термин"],
     "storage": ["хранится", "хранение", "хранить", "где находится", "место хранения", "store", "stores", "storage"],
     "compare": ["чем отличается", "разница", "различие", "сравни", "compare", "difference"],
-    "mechanism": ["как работает", "как устроен", "принцип работы", "механизм", "how works", "mechanism"],
-    "relation": ["как связан", "связаны", "related", "relation", "зависит"],
-    "diagram_description": [
-        "что показано",
-        "что изображено",
+    "composition": ["из чего состоит", "состоит из", "входит", "компонент", "contains", "consists of", "parts"],
+    "diagram_elements": ["какие элементы", "какие блоки", "подписи", "labels", "elements", "blocks"],
+    "diagram_explanation": [
         "объясни схему",
         "объясни рисунок",
-        "блок",
-        "стрелк",
+        "что изображено",
+        "что показано",
+        "как работает",
+        "как устроен",
+        "как связаны блоки",
         "diagram",
         "figure",
         "layout",
+        "architecture",
     ],
-    "purpose": ["для чего", "зачем", "why used", "purpose", "используется для"],
-    "attribute_lookup": ["из чего состоит", "содержит", "что хранится", "где хранятся", "contains", "consists of"],
-    "yes_no": ["есть ли", "говорится ли", "упоминается ли", "is there", "does it mention"],
+    "attribute_lookup": ["содержит", "что хранится", "где хранятся", "contains"],
 }
 
 ENTITY_EXPANSIONS: dict[str, list[str]] = {
     "stack": ["стек", "stack"],
     "heap": ["куча", "heap"],
     "ram": ["ram", "random access memory", "оперативная память", "random access machine"],
+    "ram_machine": ["random access machine", "машина с произвольным доступом", "ram architecture"],
+    "ram_memory": ["random access memory", "оперативная память", "main memory"],
     "alu": ["alu", "arithmetic logic unit", "арифметико-логическое устройство"],
     "von_neumann": ["фон неймана", "фон неимана", "von neumann"],
     "primitive_types": ["primitive types", "примитивные типы"],
@@ -67,8 +69,9 @@ RELATION_EXPANSIONS: dict[str, list[str]] = {
     "storage": ["storage", "место хранения", "хранится"],
     "compare": ["difference", "compare", "отличается", "разница"],
     "definition": ["definition", "что такое", "означает"],
-    "mechanism": ["mechanism", "принцип работы", "как устроен"],
-    "diagram_description": ["diagram", "схема", "рисунок", "layout"],
+    "composition": ["components", "parts", "входит", "состоит"],
+    "diagram_elements": ["diagram elements", "блоки", "labels", "подписи"],
+    "diagram_explanation": ["diagram", "схема", "рисунок", "layout", "architecture"],
 }
 
 
@@ -82,6 +85,7 @@ class ProcessedQuery:
     entities: list[str]
     normalized_relations: list[str]
     structure: str
+    expected_answer_shape: str
 
 
 def normalize_and_expand_query(query: str) -> ProcessedQuery:
@@ -92,6 +96,7 @@ def normalize_and_expand_query(query: str) -> ProcessedQuery:
     relations = extract_relations(normalized)
     structure = detect_question_structure(normalized, entities)
     question_intent = infer_question_intent(normalized, entities, relations, structure)
+    expected_answer_shape = infer_expected_answer_shape(question_intent)
 
     forms = [query.strip(), normalized, normalized_retrieval]
     for ent in entities:
@@ -117,21 +122,24 @@ def normalize_and_expand_query(query: str) -> ProcessedQuery:
         entities=entities,
         normalized_relations=relations,
         structure=structure,
+        expected_answer_shape=expected_answer_shape,
     )
 
 
 def extract_entities(normalized_query: str) -> list[str]:
+    normalized_query_retrieval = normalize_for_retrieval(normalized_query)
     found: list[str] = []
     for entity, aliases in ENTITY_ALIASES.items():
-        if any(alias in normalized_query for alias in aliases):
+        if any(_phrase_match(normalized_query, normalized_query_retrieval, alias) for alias in aliases):
             found.append(entity)
     return found
 
 
 def extract_relations(normalized_query: str) -> list[str]:
+    normalized_query_retrieval = normalize_for_retrieval(normalized_query)
     found: list[str] = []
     for relation, aliases in RELATION_ALIASES.items():
-        if any(alias in normalized_query for alias in aliases):
+        if any(_phrase_match(normalized_query, normalized_query_retrieval, alias) for alias in aliases):
             found.append(relation)
     return found
 
@@ -143,10 +151,15 @@ def detect_question_structure(normalized_query: str, entities: list[str]) -> str
         return "x_vs_y"
     if any(tok in normalized_query for tok in ["что хранится в", "где хранятся", "где хранится"]):
         return "attribute_in_entity"
-    if any(tok in normalized_query for tok in ["как устроен", "как работает"]):
-        return "mechanism_of_entity"
-    if any(tok in normalized_query for tok in ["что изображено", "что показано", "на схеме", "на рисунке"]):
-        return "diagram_description"
+    if any(tok in normalized_query for tok in ["что входит", "из чего состоит", "состоит из"]):
+        return "composition_of_entity"
+    if any(tok in normalized_query for tok in ["какие элементы", "какие блоки", "элементы на схеме", "блоки на схеме"]):
+        return "diagram_elements"
+    if any(
+        tok in normalized_query
+        for tok in ["что изображено", "что показано", "на схеме", "на рисунке", "объясни схему", "как работает", "как устроен"]
+    ):
+        return "diagram_explanation"
     return "generic"
 
 
@@ -156,22 +169,41 @@ def infer_question_intent(
     relations: list[str],
     structure: str,
 ) -> str:
-    if "yes_no" in relations:
-        return "yes_no"
     if structure == "x_vs_y" or "compare" in relations:
         return "comparison"
-    if structure == "diagram_description" or "diagram_description" in relations:
-        return "diagram_layout"
-    if structure == "mechanism_of_entity" or "mechanism" in relations:
-        return "mechanism"
+    if structure == "composition_of_entity" or "composition" in relations:
+        return "composition"
+    if structure == "diagram_elements" or "diagram_elements" in relations:
+        return "diagram_elements"
+    if structure == "diagram_explanation" or "diagram_explanation" in relations:
+        return "diagram_explanation"
     if "definition" in relations or normalized_query.startswith("что такое"):
         return "definition"
     if "attribute_lookup" in relations or "storage" in relations or structure == "attribute_in_entity":
         return "attribute_lookup"
-    if "purpose" in relations:
-        return "explanation"
-    if "relation" in relations:
-        return "relation"
-    if any(tok in normalized_query for tok in ["объясни", "explain"]) and entities:
-        return "explanation"
     return "general"
+
+
+def infer_expected_answer_shape(question_intent: str) -> str:
+    shape_by_intent = {
+        "definition": "X — это ...",
+        "attribute_lookup": "По материалам, X хранит/содержит ...",
+        "comparison": "X — ..., а Y — ...",
+        "composition": "В X входят A, B, C...",
+        "diagram_elements": "На схеме показаны: A, B, C...",
+        "diagram_explanation": "На схеме изображены ... ; их роль: ...",
+        "general": "Краткий ответ по подтвержденным фактам.",
+    }
+    return shape_by_intent.get(question_intent, shape_by_intent["general"])
+
+
+def _phrase_match(normalized_query: str, normalized_query_retrieval: str, phrase: str) -> bool:
+    p_norm = normalize_text(phrase)
+    if p_norm and p_norm in normalized_query:
+        return True
+    p_retrieval = normalize_for_retrieval(phrase)
+    if p_retrieval and p_retrieval in normalized_query_retrieval:
+        return True
+    p_tokens = [t for t in p_retrieval.split() if t]
+    q_tokens = set(normalized_query_retrieval.split())
+    return bool(p_tokens) and all(t in q_tokens for t in p_tokens)

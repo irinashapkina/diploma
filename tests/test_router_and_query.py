@@ -13,7 +13,7 @@ def test_query_expansion_contains_alias() -> None:
     assert "random access machine" in forms
     assert "random access memory" in forms
     assert "оперативная память" in forms
-    assert q.question_intent in {"mechanism", "explanation"}
+    assert q.question_intent in {"general", "diagram_explanation", "composition"}
 
 
 def test_router_visual_for_diagram_questions() -> None:

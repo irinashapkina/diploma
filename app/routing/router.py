@@ -61,10 +61,10 @@ class QueryRouter:
         text_hits = sum(1 for m in self.text_markers if m in q)
         has_visual_entity = bool(processed_query and any(e in {"alu", "von_neumann"} for e in processed_query.entities))
 
-        if intent == "diagram_layout":
-            reasons.append("intent_diagram_layout")
+        if intent in {"diagram_elements", "diagram_explanation"}:
+            reasons.append("intent_diagram")
             return RoutingDecision(mode="visual", reasons=reasons)
-        if intent in {"comparison", "relation", "mechanism"} and (visual_hits >= 1 or has_visual_entity):
+        if intent in {"comparison", "composition"} and (visual_hits >= 1 or has_visual_entity):
             reasons.append("semantic_intent_with_visual_cues")
             return RoutingDecision(mode="hybrid", reasons=reasons)
 
