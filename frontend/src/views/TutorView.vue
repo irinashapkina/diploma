@@ -19,11 +19,6 @@
           placeholder="Например: Объясни, что такое тезис Чёрча-Тьюринга простыми словами"
         />
       </label>
-      <div class="grid-2">
-        <label>Количество источников
-          <input v-model.number="topK" type="number" min="1" max="20" />
-        </label>
-      </div>
       <div class="row">
         <button :disabled="store.loading || !question.trim() || !coursesStore.selectedCourseId" @click="ask">
           Сформировать ответ
@@ -33,57 +28,85 @@
     </ApiPanel>
 
     <ApiPanel v-if="store.answer" title="Ответ помощника">
-      <StatusPill
-        :label="`Уверенность: ${store.answer.confidence.toFixed(3)}`"
-        :variant="store.answer.confidence >= 0.55 ? 'ok' : 'warn'"
-      />
-      <p>{{ store.answer.answer }}</p>
+      <template v-if="hasConfirmedAnswer">
+        <p>{{ store.answer.answer }}</p>
+      </template>
+      <p v-else class="pill warn">
+        Подходящий источник в материалах курса не найден. Лучше уточнить вопрос у преподавателя.
+      </p>
     </ApiPanel>
 
-    <ApiPanel v-if="store.answer?.sources?.length" title="Использованные источники">
-      <table class="issues-table">
-        <thead>
-          <tr>
-            <th>Документ</th>
-            <th>Страница</th>
-            <th>Тип</th>
-            <th>Фрагмент</th>
-            <th>Оценка</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(source, index) in store.answer.sources" :key="`${source.document_title}-${source.page}-${index}`">
-            <td>{{ source.document_title }}</td>
-            <td>{{ source.page }}</td>
-            <td>{{ source.type }}</td>
-            <td>{{ source.snippet }}</td>
-            <td>{{ source.score.toFixed(4) }}</td>
-          </tr>
-        </tbody>
-      </table>
+    <ApiPanel v-if="hasConfirmedAnswer && relevantSources.length" title="Релевантные источники">
+      <div class="grid-2">
+        <section
+          v-for="(source, index) in relevantSources"
+          :key="`${source.document_title}-${source.page}-${index}`"
+          class="panel"
+        >
+          <div class="panel-body">
+            <strong>{{ source.document_title }}</strong>
+            <p class="muted-note">Страница: {{ source.page }}</p>
+          </div>
+        </section>
+      </div>
     </ApiPanel>
   </section>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 import ApiPanel from "@/components/ApiPanel.vue";
-import StatusPill from "@/components/StatusPill.vue";
 import { useCoursesStore } from "@/stores/courses";
 import { useTutorStore } from "@/stores/tutor";
 
 const store = useTutorStore();
 const coursesStore = useCoursesStore();
 const question = ref("");
-const topK = ref(6);
+
+const refusalPatterns = [
+  "недостаточно данных",
+  "не найден",
+  "уточнить вопрос у преподавателя",
+];
+
+const relevantSources = computed(() => {
+  if (!store.answer?.sources?.length) return [];
+  const uniqueKeys = new Set<string>();
+  const sorted = [...store.answer.sources]
+    .filter((source) => source.document_title.trim().length > 0 && Number.isFinite(source.page) && source.page > 0)
+    .sort((a, b) => b.score - a.score);
+  if (!sorted.length) return [];
+
+  const bestScore = sorted[0].score;
+  const minAllowedScore = Math.max(0.35, bestScore * 0.7);
+  const filtered = sorted.filter((source) => source.score >= minAllowedScore);
+
+  return filtered
+    .filter((source) => {
+      const key = `${source.document_title}::${source.page}`;
+      if (uniqueKeys.has(key)) return false;
+      uniqueKeys.add(key);
+      return true;
+    })
+    .slice(0, 3);
+});
+
+const hasConfirmedAnswer = computed(() => {
+  if (!store.answer) return false;
+  const text = (store.answer.answer || "").trim();
+  if (!text) return false;
+  if (store.answer.confidence < 0.55) return false;
+  const lowered = text.toLowerCase();
+  if (refusalPatterns.some((pattern) => lowered.includes(pattern))) return false;
+  return relevantSources.value.length > 0;
+});
 
 async function ask() {
   if (!coursesStore.selectedCourseId) return;
   await store.ask({
     courseId: coursesStore.selectedCourseId,
     question: question.value,
-    topK: topK.value,
   });
 }
 

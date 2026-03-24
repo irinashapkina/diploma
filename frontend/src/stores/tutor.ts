@@ -10,14 +10,13 @@ export const useTutorStore = defineStore("tutor", () => {
   const error = ref<string | null>(null);
   const answer = ref<TutorAnswerResponse | null>(null);
 
-  async function ask(params: { courseId: string; question: string; topK?: number; debug?: boolean }) {
+  async function ask(params: { courseId: string; question: string; debug?: boolean }) {
     loading.value = true;
     error.value = null;
     try {
       answer.value = await api.askCourse(params.courseId, {
         course_id: params.courseId,
         question: params.question,
-        top_k: params.topK,
         debug: params.debug ?? false,
       });
       return answer.value;

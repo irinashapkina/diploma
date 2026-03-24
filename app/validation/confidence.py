@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.answering.fact_extractor import FactExtractionResult
 from app.retrieval.sense_disambiguation import SenseDecision
-from app.schemas.models import RetrievalCandidate
+from app.schemas.models import RetrievalCandidate, SourceItem
 from app.validation.grounding import ValidationResult
 
 
@@ -14,6 +14,7 @@ def estimate_confidence(
     facts_result: FactExtractionResult | None = None,
     sense_decision: SenseDecision | None = None,
     answer_mode: str = "grounded_synthesis",
+    final_sources: list[SourceItem] | None = None,
 ) -> tuple[float, dict]:
     text_answer = (answer or "").strip()
     if not candidates:
@@ -46,6 +47,11 @@ def estimate_confidence(
         ambiguity_penalty = min(0.18, sum(sense_decision.ambiguity.values()) / max(1, len(sense_decision.ambiguity)) * 0.2)
 
     source_faithfulness = _estimate_source_faithfulness(text_answer, facts_result)
+    final_sources = final_sources or []
+    final_source_quality = _estimate_final_source_quality(final_sources)
+    final_source_bonus = 0.08 * final_source_quality
+    no_final_sources_penalty = 0.14 if text_answer and not final_sources else 0.0
+    weak_final_sources_penalty = 0.08 if final_sources and final_source_quality < 0.3 else 0.0
     synthesis_bonus = 0.05 if answer_mode == "grounded_synthesis" and text_answer else 0.0
     extractive_bonus = 0.03 if answer_mode == "extractive" and text_answer else 0.0
     partial_mode_penalty = 0.08 if answer_mode == "partial_answer" else 0.0
@@ -57,6 +63,7 @@ def estimate_confidence(
         + grounding
         + 0.18 * quality_facts
         + 0.18 * source_faithfulness
+        + final_source_bonus
         + synthesis_bonus
         + extractive_bonus
         + multi_source_bonus
@@ -64,6 +71,8 @@ def estimate_confidence(
         - partial_mode_penalty
         - ambiguity_penalty
         - multi_source_penalty
+        - no_final_sources_penalty
+        - weak_final_sources_penalty
         - empty_penalty
         - refusal_penalty
     )
@@ -79,9 +88,13 @@ def estimate_confidence(
         "grounding": round(grounding, 4),
         "quality_facts": round(quality_facts, 4),
         "source_faithfulness": round(source_faithfulness, 4),
+        "final_source_quality": round(final_source_quality, 4),
+        "final_source_bonus": round(final_source_bonus, 4),
         "multi_source_bonus": round(multi_source_bonus, 4),
         "multi_source_penalty": round(multi_source_penalty, 4),
         "ambiguity_penalty": round(ambiguity_penalty, 4),
+        "no_final_sources_penalty": round(no_final_sources_penalty, 4),
+        "weak_final_sources_penalty": round(weak_final_sources_penalty, 4),
         "empty_penalty": round(empty_penalty, 4),
         "refusal_penalty": round(refusal_penalty, 4),
         "partial_penalty": round(partial_penalty + partial_mode_penalty, 4),
@@ -108,3 +121,11 @@ def _estimate_source_faithfulness(answer: str, facts_result: FactExtractionResul
 
 def _tokenize(text: str) -> list[str]:
     return [t for t in text.lower().split() if len(t) > 2]
+
+
+def _estimate_final_source_quality(final_sources: list[SourceItem]) -> float:
+    if not final_sources:
+        return 0.0
+    avg_score = sum(max(0.0, min(1.0, float(s.score))) for s in final_sources) / max(1, len(final_sources))
+    coverage = min(1.0, len(final_sources) / 3.0)
+    return 0.65 * avg_score + 0.35 * coverage

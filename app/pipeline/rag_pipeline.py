@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.answering.answer_shaper import build_controlled_synthesis_prompt, build_fallback_answer_from_facts
 from app.answering.fact_extractor import extract_structured_facts
+from app.answering.source_selector import select_final_sources
 from app.answering.prompts import build_grounded_prompt
 from app.answering.qwen_ollama import QwenVLAnswerer
 from app.answering.minicpm_helper import MiniCPMVHelper
@@ -13,7 +14,7 @@ from app.retrieval.hybrid import HybridRetriever
 from app.retrieval.query_processing import normalize_and_expand_query
 from app.retrieval.sense_disambiguation import disambiguate_entities
 from app.routing.router import QueryRouter
-from app.schemas.models import AskResponse, RetrievalCandidate, SourceItem
+from app.schemas.models import AskResponse, RetrievalCandidate
 from app.validation.confidence import estimate_confidence
 from app.validation.grounding import GroundingValidator
 
@@ -99,6 +100,14 @@ class RAGPipeline:
                 "Недостаточно данных в материалах преподавателя для уверенного ответа на этот вопрос. "
                 "Попробуйте уточнить формулировку или загрузить слайды с этой темой."
             )
+            final_source_selection = select_final_sources(
+                processed_query=q,
+                answer=low_support_answer,
+                candidates=candidates,
+                facts_result=facts_result,
+                support=support,
+                max_sources=max(2, min(top_k, 4)) if top_k > 0 else 3,
+            )
             conf, conf_breakdown = estimate_confidence(
                 answer=low_support_answer,
                 candidates=candidates,
@@ -107,17 +116,9 @@ class RAGPipeline:
                 facts_result=facts_result,
                 sense_decision=sense_decision,
                 answer_mode="partial_answer",
+                final_sources=final_source_selection.sources,
             )
-            sources = [
-                SourceItem(
-                    document_title=c.document_title,
-                    page=c.page_number,
-                    snippet=(c.text or "")[:220],
-                    score=round(c.score, 4),
-                    type=c.source_type,
-                )
-                for c in candidates[: max(0, min(top_k, 3))]
-            ]
+            sources = final_source_selection.sources
             debug_payload = None
             if debug:
                 debug_payload = {
@@ -131,6 +132,12 @@ class RAGPipeline:
                     "structured_facts": [],
                     "rejected_bad_facts": facts_result.rejected_fragments,
                     "contributing_sources": [],
+                    "final_source_selection": {
+                        "reason": final_source_selection.reason,
+                        "selected_source_ids": final_source_selection.selected_source_ids,
+                        "selected_facts": final_source_selection.selected_facts,
+                        "final_sources_count": len(final_source_selection.sources),
+                    },
                     "answer_mode": "partial_answer",
                     "confidence_breakdown": conf_breakdown,
                     "support": {
@@ -214,6 +221,14 @@ class RAGPipeline:
             answer = build_fallback_answer_from_facts(processed_query=q, facts_result=facts_result)
         validation = self.validator.validate(answer=answer, context_items=candidates)
         safe_answer = self.validator.enforce(answer=answer, validation=validation)
+        final_source_selection = select_final_sources(
+            processed_query=q,
+            answer=safe_answer,
+            candidates=candidates,
+            facts_result=facts_result,
+            support=support,
+            max_sources=max(2, min(top_k, 4)) if top_k > 0 else 3,
+        )
         confidence, conf_breakdown = estimate_confidence(
             answer=safe_answer,
             candidates=candidates,
@@ -222,18 +237,10 @@ class RAGPipeline:
             facts_result=facts_result,
             sense_decision=sense_decision,
             answer_mode=shaping_plan.answer_mode,
+            final_sources=final_source_selection.sources,
         )
 
-        sources = [
-            SourceItem(
-                document_title=c.document_title,
-                page=c.page_number,
-                snippet=(c.text or "")[:220],
-                score=round(c.score, 4),
-                type=c.source_type,
-            )
-            for c in candidates[: top_k if top_k > 0 else 6]
-        ]
+        sources = final_source_selection.sources
         debug_payload = None
         if debug:
             debug_payload = {
@@ -248,6 +255,12 @@ class RAGPipeline:
                 "structured_facts": [f.__dict__ for f in facts_result.facts],
                 "rejected_bad_facts": facts_result.rejected_fragments,
                 "contributing_sources": facts_result.contributing_sources,
+                "final_source_selection": {
+                    "reason": final_source_selection.reason,
+                    "selected_source_ids": final_source_selection.selected_source_ids,
+                    "selected_facts": final_source_selection.selected_facts,
+                    "final_sources_count": len(final_source_selection.sources),
+                },
                 "likely_multi_source": facts_result.likely_multi_source,
                 "multi_source_fulfilled": facts_result.multi_source_fulfilled,
                 "answer_mode": shaping_plan.answer_mode,
