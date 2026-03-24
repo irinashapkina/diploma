@@ -24,7 +24,16 @@ def main() -> None:
     payload = {"course_id": args.course_id, "question": args.question, "top_k": args.top_k, "debug": args.debug}
     r = requests.post(f"{args.api}/courses/{args.course_id}/ask", json=payload, timeout=240)
     print(r.status_code)
-    print(json.dumps(r.json(), ensure_ascii=False, indent=2))
+    try:
+        body = r.json()
+    except ValueError:
+        text = (r.text or "").strip()
+        print(text if text else "<empty response body>")
+        sys.exit(1 if r.status_code >= 400 else 0)
+
+    print(json.dumps(body, ensure_ascii=False, indent=2))
+    if r.status_code >= 400:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
