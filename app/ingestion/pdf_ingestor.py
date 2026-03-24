@@ -11,6 +11,7 @@ import fitz
 from PIL import Image
 
 from app.config.settings import settings
+from app.chunking.chunker import TextChunker
 from app.indexing.store import ArtifactStore
 from app.ocr.ocr_engine import OCREngine, estimate_text_quality, infer_page_flags
 from app.schemas.models import DocumentRecord, PageRecord, path_to_str
@@ -24,6 +25,7 @@ class PDFIngestor:
     def __init__(self, ocr_engine: OCREngine | None = None) -> None:
         self.ocr_engine = ocr_engine or OCREngine(settings.tesseract_langs)
         self.store = ArtifactStore()
+        self.chunker = TextChunker()
 
     def copy_pdf(self, source_path: Path, course_id: str) -> tuple[str, Path]:
         document_id = str(uuid.uuid4())
@@ -123,8 +125,10 @@ class PDFIngestor:
             source_filename=source_path.name,
             checksum_sha256=checksum,
         )
-        self.store.update_document_status(document.document_id, status="ingested")
         self.store.create_pages(page_records)
+        chunks = self.chunker.chunk_pages(page_records)
+        self.store.upsert_chunks_for_document(course_id=course_id, document_id=document.document_id, chunks=chunks)
+        self.store.update_document_status(document.document_id, status="ingested")
         write_json(settings.artifacts_dir / "last_ingest.json", document.model_dump())
         logger.info("Ingested %s pages for %s", len(page_records), doc_title)
         return document

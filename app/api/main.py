@@ -106,14 +106,22 @@ def index_course(course_id: str, req: IndexRequest) -> dict[str, Any]:
 
 @app.get("/courses/{course_id}/documents")
 def list_documents(course_id: str) -> dict[str, Any]:
+    if store.get_course(course_id) is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
     docs = [d.model_dump() for d in store.list_documents(course_id=course_id)]
     return {"documents": docs}
 
 
 @app.get("/courses/{course_id}/pages")
-def list_course_pages(course_id: str) -> dict[str, Any]:
-    pages = [p.model_dump() for p in store.list_pages(course_id=course_id)]
-    return {"course_id": course_id, "pages": pages}
+def list_course_pages(course_id: str, document_id: str | None = None) -> dict[str, Any]:
+    if store.get_course(course_id) is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
+    if document_id:
+        document = store.get_document(document_id)
+        if not document or document.course_id != course_id:
+            raise HTTPException(status_code=404, detail="Document not found in this course.")
+    pages = [p.model_dump() for p in store.list_pages(course_id=course_id, document_id=document_id)]
+    return {"course_id": course_id, "document_id": document_id, "pages": pages}
 
 
 @app.get("/courses/{course_id}/documents/{document_id}/pages")

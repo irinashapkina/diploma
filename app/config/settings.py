@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_name: str = "Multimodal RAG MVP"
+    app_name: str = "Teacher Agent API"
     debug: bool = True
 
     data_dir: Path = Field(default=Path("data"))
@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     artifacts_dir: Path = Field(default=Path("data/artifacts"))
     database_url: str = "sqlite:///data/rag.db"
     db_echo: bool = False
+    db_auto_init: bool = False
 
     tesseract_langs: str = "rus+eng"
     ocr_dpi: int = 220

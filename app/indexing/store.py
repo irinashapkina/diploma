@@ -36,7 +36,21 @@ class ArtifactStore:
             self.ensure_artifact_files()
             return
         try:
-            init_db()
+            with SessionLocal() as db:
+                db.execute(select(1))
+        except Exception as exc:
+            logger.warning("DB connection check failed (%s). Falling back to legacy JSONL mode.", exc)
+            self._legacy = True
+            self.documents_path = settings.artifacts_dir / "documents.jsonl"
+            self.pages_path = settings.artifacts_dir / "pages.jsonl"
+            self.chunks_path = settings.artifacts_dir / "chunks.jsonl"
+            self._teachers: dict[str, TeacherRecord] = {}
+            self._courses: dict[str, CourseRecord] = {}
+            self.ensure_artifact_files()
+            return
+        try:
+            if settings.db_auto_init:
+                init_db()
         except Exception as exc:
             logger.warning("DB init failed (%s). Falling back to legacy JSONL mode.", exc)
             self._legacy = True
@@ -493,15 +507,23 @@ class ArtifactStore:
         if self._legacy:
             return
         with SessionLocal() as db:
-            docs = {d.id: d for d in db.execute(select(DocumentDB).where(DocumentDB.course_id == course_id)).scalars().all()}
-            pages = {p.id: p for p in db.execute(select(PageDB).where(PageDB.course_id == course_id)).scalars().all()}
+            docs_rows = db.execute(select(DocumentDB).where(DocumentDB.course_id == course_id)).scalars().all()
+            docs_by_id = {d.id: d for d in docs_rows}
+            docs_by_title = {d.title: d for d in docs_rows}
+            pages_rows = db.execute(select(PageDB).where(PageDB.course_id == course_id)).scalars().all()
             for src in sources:
                 page_num = int(src.get("page", 0))
-                matched_page = next((p for p in pages.values() if p.page_number == page_num), None)
-                if matched_page is None:
-                    continue
-                matched_doc = docs.get(matched_page.document_id)
+                src_title = str(src.get("document_title", "")).strip()
+                matched_doc = docs_by_title.get(src_title)
                 if matched_doc is None:
+                    matched_doc = next(iter(docs_by_id.values()), None)
+                if matched_doc is None:
+                    continue
+                matched_page = next(
+                    (p for p in pages_rows if p.document_id == matched_doc.id and p.page_number == page_num),
+                    None,
+                )
+                if matched_page is None:
                     continue
                 db.add(
                     AnswerSourceDB(

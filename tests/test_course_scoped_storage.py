@@ -217,6 +217,9 @@ def test_indices_metadata_is_written_on_index_course() -> None:
         def upsert_index_metadata(self, **kwargs):
             self.index_updates.append(kwargs)
 
+        def update_document_status(self, document_id: str, status: str, error_message: str | None = None) -> None:
+            return
+
     class _BM25:
         def __init__(self):
             self.path = "/tmp/bm25.json"

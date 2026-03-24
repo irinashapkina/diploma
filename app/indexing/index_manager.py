@@ -88,6 +88,7 @@ class IndexManager:
         if settings.enable_visual_index:
             self.visual.build(all_pages)
         self._persist_index_metadata(course_id=course_id, chunks_count=len(all_chunks), pages_count=len(all_pages))
+        self.store.update_document_status(document_id, status="indexed")
         logger.info("Indexed document %s", document_id)
         return {
             "course_id": course_id,
@@ -117,6 +118,8 @@ class IndexManager:
         if settings.enable_visual_index:
             self.visual.build(pages)
         self._persist_index_metadata(course_id=course_id, chunks_count=len(all_chunks), pages_count=len(pages))
+        for doc in self.store.list_documents(course_id=course_id):
+            self.store.update_document_status(doc.document_id, status="indexed")
         return {
             "course_id": course_id,
             "documents": len(self.store.list_documents(course_id=course_id)),
