@@ -78,11 +78,17 @@ uvicorn app.api.main:app --reload
 ```
 
 Endpoints:
-- `POST /documents/upload`
-- `POST /documents/index`
-- `POST /ask`
-- `GET /documents`
-- `GET /documents/{id}/pages`
+- `POST /teachers`
+- `POST /courses`
+- `GET /courses?teacher_id=...`
+- `POST /courses/{course_id}/documents/upload`
+- `GET /courses/{course_id}/documents`
+- `POST /courses/{course_id}/index` (курс целиком или один документ через `document_id`)
+- `POST /courses/{course_id}/ask`
+- `GET /courses/{course_id}/pages`
+- `GET /courses/{course_id}/documents/{document_id}/pages`
+
+## 5. Frontend (Vue 3 + Vite + Pinia)
 
 ## 5. CLI usage
 

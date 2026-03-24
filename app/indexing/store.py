@@ -81,6 +81,15 @@ class ArtifactStore:
             db.commit()
         return teacher
 
+    def get_teacher(self, teacher_id: str) -> TeacherRecord | None:
+        if self._legacy:
+            return self._teachers.get(teacher_id)
+        with SessionLocal() as db:
+            row = db.get(TeacherDB, teacher_id)
+        if row is None:
+            return None
+        return TeacherRecord(teacher_id=row.id, full_name=row.full_name)
+
     def create_course(
         self,
         teacher_id: str,

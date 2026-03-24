@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.config.settings import settings
@@ -20,10 +23,30 @@ setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 store = ArtifactStore()
 ingestor = PDFIngestor()
 index_manager = IndexManager()
 pipeline = RAGPipeline()
+project_root = Path(__file__).resolve().parents[2]
+frontend_dir = project_root / "frontend"
+frontend_dist_dir = frontend_dir / "dist"
+frontend_assets_dir = frontend_dist_dir / "assets"
+if frontend_assets_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(frontend_assets_dir)), name="ui_assets")
+if settings.data_dir.exists():
+    app.mount("/data", StaticFiles(directory=str(settings.data_dir.resolve())), name="data")
 
 
 class IndexRequest(BaseModel):
@@ -47,9 +70,25 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/", include_in_schema=False)
+def ui_index() -> FileResponse:
+    index_path = frontend_dist_dir / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="UI is not available.")
+    return FileResponse(index_path)
+
+
 @app.post("/teachers", response_model=TeacherRecord)
 def create_teacher(req: TeacherCreateRequest) -> TeacherRecord:
     return store.create_teacher(full_name=req.full_name)
+
+
+@app.get("/teachers/{teacher_id}", response_model=TeacherRecord)
+def get_teacher(teacher_id: str) -> TeacherRecord:
+    teacher = store.get_teacher(teacher_id)
+    if teacher is None:
+        raise HTTPException(status_code=404, detail=f"Teacher not found: {teacher_id}")
+    return teacher
 
 
 @app.post("/courses", response_model=CourseRecord)
@@ -82,7 +121,16 @@ async def upload_document(course_id: str, file: UploadFile = File(...)) -> dict[
         content = await file.read()
         tmp.write(content)
         tmp_path = Path(tmp.name)
-    doc = ingestor.ingest_pdf(tmp_path, course_id=course_id, title=Path(file.filename).stem)
+    try:
+        doc = ingestor.ingest_pdf(
+            tmp_path,
+            course_id=course_id,
+            title=Path(file.filename).stem,
+            source_filename=file.filename,
+        )
+    except TypeError:
+        # Backward-compatible fallback for patched/mocked ingestors
+        doc = ingestor.ingest_pdf(tmp_path, course_id=course_id, title=Path(file.filename).stem)
     tmp_path.unlink(missing_ok=True)
     return {"status": "uploaded", "document": doc.model_dump()}
 
