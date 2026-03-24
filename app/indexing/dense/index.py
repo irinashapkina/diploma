@@ -35,6 +35,20 @@ class DenseTextIndex:
         self.chunk_ids: list[str] = []
         self.index = None
         self.embeddings: np.ndarray | None = None
+        self.course_id: str | None = None
+
+    def set_course_scope(self, course_id: str) -> None:
+        if self.course_id == course_id:
+            return
+        self.course_id = course_id
+        scoped_dir = settings.indices_dir / course_id
+        scoped_dir.mkdir(parents=True, exist_ok=True)
+        self.path_index = scoped_dir / "dense_faiss.index"
+        self.path_embeddings = scoped_dir / "dense_embeddings.npy"
+        self.path_meta = scoped_dir / "dense_meta.json"
+        self.chunk_ids = []
+        self.index = None
+        self.embeddings = None
 
     def _get_model(self) -> SentenceTransformer:
         if self.model is None:

@@ -15,13 +15,14 @@ if str(ROOT) not in sys.path:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("question")
+    parser.add_argument("--course-id", required=True)
     parser.add_argument("--top-k", type=int, default=6)
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--api", default="http://127.0.0.1:8000")
     args = parser.parse_args()
 
-    payload = {"question": args.question, "top_k": args.top_k, "debug": args.debug}
-    r = requests.post(f"{args.api}/ask", json=payload, timeout=240)
+    payload = {"course_id": args.course_id, "question": args.question, "top_k": args.top_k, "debug": args.debug}
+    r = requests.post(f"{args.api}/courses/{args.course_id}/ask", json=payload, timeout=240)
     print(r.status_code)
     print(json.dumps(r.json(), ensure_ascii=False, indent=2))
 

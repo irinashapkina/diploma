@@ -14,12 +14,13 @@ if str(ROOT) not in sys.path:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("pdf_path", type=Path)
+    parser.add_argument("--course-id", required=True)
     parser.add_argument("--api", default="http://127.0.0.1:8000")
     args = parser.parse_args()
 
     with args.pdf_path.open("rb") as f:
         files = {"file": (args.pdf_path.name, f, "application/pdf")}
-        r = requests.post(f"{args.api}/documents/upload", files=files, timeout=120)
+        r = requests.post(f"{args.api}/courses/{args.course_id}/documents/upload", files=files, timeout=120)
     print(r.status_code)
     print(r.json())
 

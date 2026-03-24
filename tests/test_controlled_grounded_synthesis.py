@@ -156,8 +156,10 @@ def test_pipeline_diagram_elements_non_empty_with_empty_llm_answer(monkeypatch) 
             reason="diagram_supported",
         ),
     )
+    monkeypatch.setattr(pipeline.store, "create_ask_message", lambda **kwargs: "msg1")
+    monkeypatch.setattr(pipeline.store, "create_answer_sources", lambda **kwargs: None)
 
-    resp = pipeline.ask("какие элементы есть у Random Access Machine на схеме", debug=True)
+    resp = pipeline.ask("какие элементы есть у Random Access Machine на схеме", course_id="course1", debug=True)
     assert resp.answer.strip() != ""
     assert ("read-only" in resp.answer.lower()) or ("write-only" in resp.answer.lower())
     assert "оперативная память" not in " ".join(f["source_phrase"] for f in resp.debug["structured_facts"]).lower()

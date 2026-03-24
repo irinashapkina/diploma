@@ -40,10 +40,12 @@ class TextChunker:
                 continue
             chunk = ChunkRecord(
                 chunk_id=str(uuid.uuid4()),
+                course_id=page.course_id,
                 document_id=page.document_id,
                 document_title=page.document_title,
                 page_id=page.page_id,
                 page_number=page.page_number,
+                chunk_order=idx,
                 text=block,
                 cleaned_text=cleaned,
                 normalized_text=normalize_for_retrieval(cleaned),

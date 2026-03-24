@@ -10,6 +10,7 @@ from app.schemas.models import PageRecord
 
 def _make_page() -> PageRecord:
     return PageRecord(
+        course_id="course1",
         document_id="doc1",
         document_title="Doc",
         page_id="doc1_p1",

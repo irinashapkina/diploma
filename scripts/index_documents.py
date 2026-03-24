@@ -16,8 +16,8 @@ from app.indexing.index_manager import IndexManager
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--course-id", required=True)
     parser.add_argument("--document-id", default=None)
-    parser.add_argument("--rebuild-all", action="store_true")
     parser.add_argument("--api", default="http://127.0.0.1:8000")
     parser.add_argument(
         "--direct",
@@ -28,17 +28,15 @@ def main() -> None:
 
     if args.direct:
         manager = IndexManager()
-        if args.rebuild_all:
-            result = manager.rebuild_all()
-        elif args.document_id:
-            result = manager.index_document(args.document_id)
+        if args.document_id:
+            result = manager.index_document(course_id=args.course_id, document_id=args.document_id)
         else:
-            raise SystemExit("Provide --document-id or --rebuild-all")
+            result = manager.index_course(course_id=args.course_id)
         print(json.dumps({"status": "indexed", "result": result}, ensure_ascii=False, indent=2))
         return
 
-    payload = {"document_id": args.document_id, "rebuild_all": args.rebuild_all}
-    r = requests.post(f"{args.api}/documents/index", json=payload, timeout=3600)
+    payload = {"document_id": args.document_id}
+    r = requests.post(f"{args.api}/courses/{args.course_id}/index", json=payload, timeout=3600)
     print(r.status_code)
     try:
         print(r.json())

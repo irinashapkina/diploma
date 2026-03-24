@@ -22,9 +22,21 @@ class BM25Hit:
 class BM25Index:
     def __init__(self) -> None:
         self.path = settings.indices_dir / "bm25_index.json"
+        self.course_id: str | None = None
         self.chunk_ids: list[str] = []
         self.tokenized_corpus: list[list[str]] = []
         self.bm25: BM25Okapi | None = None
+
+    def set_course_scope(self, course_id: str) -> None:
+        if self.course_id == course_id:
+            return
+        self.course_id = course_id
+        scoped_dir = settings.indices_dir / course_id
+        scoped_dir.mkdir(parents=True, exist_ok=True)
+        self.path = scoped_dir / "bm25_index.json"
+        self.chunk_ids = []
+        self.tokenized_corpus = []
+        self.bm25 = None
 
     def build(self, chunks: list[ChunkRecord]) -> None:
         self.chunk_ids = [c.chunk_id for c in chunks]
@@ -62,4 +74,3 @@ class BM25Index:
         scores = self.bm25.get_scores(q_tokens)
         pairs = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)[:top_k]
         return [BM25Hit(chunk_id=self.chunk_ids[i], score=float(s)) for i, s in pairs if s > 0.0]
-

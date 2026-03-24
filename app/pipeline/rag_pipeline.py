@@ -32,7 +32,9 @@ class RAGPipeline:
         self.minicpm_helper = MiniCPMVHelper()
         self.validator = GroundingValidator()
 
-    def ask(self, question: str, top_k: int = 6, debug: bool = False) -> AskResponse:
+    def ask(self, question: str, course_id: str, top_k: int = 6, debug: bool = False) -> AskResponse:
+        if not course_id:
+            raise ValueError("course_id is required")
         q = normalize_and_expand_query(question)
         sense_decision = disambiguate_entities(q)
         query_forms = list(q.retrieval_forms)
@@ -41,6 +43,7 @@ class RAGPipeline:
         route = self.router.decide(q.normalized, processed_query=q)
         candidates, retrieval_debug = self.retriever.retrieve(
             query=question,
+            course_id=course_id,
             mode=route.mode,
             top_k=top_k,
             query_forms=query_forms,
@@ -145,13 +148,39 @@ class RAGPipeline:
                         "reason": support.reason,
                     },
                 }
-            return AskResponse(
+            response = AskResponse(
                 answer=low_support_answer,
                 confidence=round(conf, 3),
                 mode=route.mode,
                 sources=sources,
                 debug=debug_payload,
             )
+            message_id = self.store.create_ask_message(
+                course_id=course_id,
+                question=question,
+                answer=response.answer,
+                answer_mode="partial_answer",
+                confidence=response.confidence,
+                question_intent=q.question_intent,
+                entities=q.entities,
+                selected_sense=sense_decision.selected_sense,
+                expected_answer_shape=q.expected_answer_shape,
+                support={
+                    "has_support": support.has_support,
+                    "answer_allowed": support.answer_allowed,
+                    "coverage": support.coverage,
+                    "reason": support.reason,
+                },
+                validation={},
+                confidence_breakdown=conf_breakdown,
+                debug_payload=debug_payload,
+            )
+            self.store.create_answer_sources(
+                message_id=message_id,
+                course_id=course_id,
+                sources=[s.model_dump() for s in response.sources],
+            )
+            return response
 
         text_context, image_paths = self._assemble_context(candidates, mode=route.mode)
         if route.mode in {"visual", "hybrid"}:
@@ -245,13 +274,43 @@ class RAGPipeline:
                 },
                 "confidence_breakdown": conf_breakdown,
             }
-        return AskResponse(
+        response = AskResponse(
             answer=safe_answer,
             confidence=round(confidence, 3),
             mode=route.mode,
             sources=sources,
             debug=debug_payload,
         )
+        message_id = self.store.create_ask_message(
+            course_id=course_id,
+            question=question,
+            answer=response.answer,
+            answer_mode=shaping_plan.answer_mode,
+            confidence=response.confidence,
+            question_intent=q.question_intent,
+            entities=q.entities,
+            selected_sense=sense_decision.selected_sense,
+            expected_answer_shape=q.expected_answer_shape,
+            support={
+                "has_support": support.has_support,
+                "answer_allowed": support.answer_allowed,
+                "coverage": support.coverage,
+                "reason": support.reason,
+            },
+            validation={
+                "unsupported_facts": validation.unsupported_facts,
+                "grounded_ratio": validation.grounded_ratio,
+                "partial": validation.partial,
+            },
+            confidence_breakdown=conf_breakdown,
+            debug_payload=debug_payload,
+        )
+        self.store.create_answer_sources(
+            message_id=message_id,
+            course_id=course_id,
+            sources=[s.model_dump() for s in response.sources],
+        )
+        return response
 
     @staticmethod
     def _assemble_context(candidates: list[RetrievalCandidate], mode: str) -> tuple[str, list[str]]:

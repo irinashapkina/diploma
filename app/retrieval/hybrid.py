@@ -27,12 +27,18 @@ class HybridRetriever:
     def retrieve(
         self,
         query: str,
+        course_id: str,
         mode: str,
         top_k: int = 8,
         query_forms: list[str] | None = None,
     ) -> tuple[list[RetrievalCandidate], dict]:
-        chunks = self.store.list_chunks()
-        pages = self.store.list_pages()
+        if not course_id:
+            raise ValueError("course_id is required for retrieval")
+        self.bm25.set_course_scope(course_id)
+        self.dense.set_course_scope(course_id)
+        self.visual.set_course_scope(course_id)
+        chunks = self.store.list_chunks(course_id=course_id)
+        pages = self.store.list_pages(course_id=course_id)
         chunk_map = {c.chunk_id: c for c in chunks}
         page_map = {p.page_id: p for p in pages}
         combined: dict[str, RetrievalCandidate] = {}

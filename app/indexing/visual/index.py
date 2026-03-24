@@ -28,6 +28,7 @@ class VisualPageIndex:
         self.active_backend = self.backend
         self.path_meta = settings.indices_dir / "visual_meta.json"
         self.path_embeddings = settings.indices_dir / "visual_embeddings.npy"
+        self.course_id: str | None = None
         self.page_ids: list[str] = []
         self.image_paths: list[str] = []
         self.embeddings: np.ndarray | None = None
@@ -41,6 +42,19 @@ class VisualPageIndex:
             settings.clip_model_name,
             settings.colqwen2_model_name,
         )
+
+    def set_course_scope(self, course_id: str) -> None:
+        if self.course_id == course_id:
+            return
+        self.course_id = course_id
+        scoped_dir = settings.indices_dir / course_id
+        scoped_dir.mkdir(parents=True, exist_ok=True)
+        self.path_meta = scoped_dir / "visual_meta.json"
+        self.path_embeddings = scoped_dir / "visual_embeddings.npy"
+        self.page_ids = []
+        self.image_paths = []
+        self.embeddings = None
+        self.embedding_dim = None
 
     def _load_clip(self) -> tuple[CLIPProcessor, CLIPModel]:
         if self._clip_processor is None or self._clip_model is None:

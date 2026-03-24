@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     pages_dir: Path = Field(default=Path("data/pages"))
     indices_dir: Path = Field(default=Path("data/indices"))
     artifacts_dir: Path = Field(default=Path("data/artifacts"))
+    database_url: str = "sqlite:///data/rag.db"
+    db_echo: bool = False
 
     tesseract_langs: str = "rus+eng"
     ocr_dpi: int = 220
