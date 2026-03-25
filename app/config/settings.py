@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5vl:7b"
     answer_max_tokens: int = 500
     answer_temperature: float = 0.1
+    review_llm_enabled: bool = False
+    review_llm_prompt_version: str = "review-v1"
+    review_llm_timeout_sec: int = 45
+    review_llm_triage_claim_confidence_lt: float = 0.62
 
     def ensure_dirs(self) -> None:
         for p in [self.data_dir, self.documents_dir, self.pages_dir, self.indices_dir, self.artifacts_dir]:

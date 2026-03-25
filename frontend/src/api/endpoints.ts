@@ -8,6 +8,12 @@ import type {
   HealthResponse,
   IndexCoursePayload,
   IndexCourseResponse,
+  ReviewBaselineResponse,
+  ReviewIssuesResponse,
+  ReviewReferenceSyncPayload,
+  ReviewReferenceSyncResponse,
+  ReviewScanPayload,
+  ReviewScanResponse,
   TeacherOut,
   TutorAnswerResponse,
   UploadResponse,
@@ -30,13 +36,30 @@ export const api = {
     const formData = new FormData();
     formData.append("file", file);
     return http
-      .post<UploadResponse>(`/courses/${courseId}/documents/upload`, formData)
+      .post<UploadResponse>(`/courses/${courseId}/documents/upload`, formData, {
+        timeout: 10 * 60_000,
+      })
       .then((r) => r.data);
   },
   listDocuments: (courseId: string) =>
     http.get<DocumentListResponse>(`/courses/${courseId}/documents`).then((r) => r.data.documents),
   indexCourse: (courseId: string, payload: IndexCoursePayload) =>
-    http.post<IndexCourseResponse>(`/courses/${courseId}/index`, payload).then((r) => r.data),
+    http
+      .post<IndexCourseResponse>(`/courses/${courseId}/index`, payload, {
+        timeout: 10 * 60_000,
+      })
+      .then((r) => r.data),
   askCourse: (courseId: string, payload: AskPayload) =>
     http.post<TutorAnswerResponse>(`/courses/${courseId}/ask`, payload).then((r) => r.data),
+
+  syncReference: (payload: ReviewReferenceSyncPayload = {}) =>
+    http.post<ReviewReferenceSyncResponse>("/review/reference/sync", payload).then((r) => r.data),
+  getReferenceBaseline: (runId?: string) =>
+    http
+      .get<ReviewBaselineResponse>("/review/reference/baseline", { params: { run_id: runId || undefined } })
+      .then((r) => r.data),
+  scanCourseReview: (courseId: string, payload: ReviewScanPayload = {}) =>
+    http.post<ReviewScanResponse>(`/review/courses/${courseId}/scan`, payload).then((r) => r.data),
+  getCourseIssues: (courseId: string) =>
+    http.get<ReviewIssuesResponse>(`/review/courses/${courseId}/issues`).then((r) => r.data),
 };

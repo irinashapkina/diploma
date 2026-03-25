@@ -17,6 +17,9 @@ from app.indexing.store import ArtifactStore
 from app.ingestion.pdf_ingestor import PDFIngestor
 from app.pipeline.rag_pipeline import RAGPipeline
 from app.schemas.models import AskRequest, AskResponse, CourseRecord, TeacherRecord
+from app.services.java_material_review_service import JavaMaterialReviewService
+from app.services.json_review_storage import JsonReviewStorage
+from app.services.reference_sync_service import ReferenceSyncService
 from app.utils.logging import setup_logging
 
 setup_logging(logging.INFO)
@@ -39,6 +42,9 @@ store = ArtifactStore()
 ingestor = PDFIngestor()
 index_manager = IndexManager()
 pipeline = RAGPipeline()
+review_storage = JsonReviewStorage()
+reference_sync_service = ReferenceSyncService(storage=review_storage)
+java_review_service = JavaMaterialReviewService(store=store, storage=review_storage)
 project_root = Path(__file__).resolve().parents[2]
 frontend_dir = project_root / "frontend"
 frontend_dist_dir = frontend_dir / "dist"
@@ -63,6 +69,14 @@ class CourseCreateRequest(BaseModel):
     year_label: str
     semester: str | None = None
     description: str | None = None
+
+
+class ReferenceSyncRequest(BaseModel):
+    include_concepts: bool = True
+
+
+class CourseScanRequest(BaseModel):
+    use_current_baseline: bool = True
 
 
 @app.get("/health")
@@ -192,3 +206,39 @@ def ask(course_id: str, req: AskRequest) -> AskResponse:
     if store.get_course(course_id) is None:
         raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
     return pipeline.ask(question=req.question, course_id=course_id, top_k=req.top_k, debug=req.debug)
+
+
+@app.post("/review/reference/sync")
+def sync_reference(req: ReferenceSyncRequest) -> dict[str, Any]:
+    summary = reference_sync_service.sync(include_concepts=req.include_concepts)
+    return {"status": "ok", "summary": summary}
+
+
+@app.get("/review/reference/baseline")
+def get_reference_baseline(run_id: str | None = None) -> dict[str, Any]:
+    payload = review_storage.get_reference_snapshot(run_id) if run_id else review_storage.get_reference_baseline()
+    if not payload:
+        raise HTTPException(status_code=404, detail="Reference baseline not found. Run /review/reference/sync first.")
+    return payload
+
+
+@app.post("/review/courses/{course_id}/scan")
+def scan_course_materials(course_id: str, req: CourseScanRequest) -> dict[str, Any]:
+    if store.get_course(course_id) is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
+    baseline_payload = review_storage.get_reference_baseline() if req.use_current_baseline else {}
+    baseline = baseline_payload.get("baseline", {})
+    try:
+        summary = java_review_service.scan_course(course_id=course_id, baseline=baseline)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "ok", "summary": summary}
+
+
+@app.get("/review/courses/{course_id}/issues")
+def get_course_issues(course_id: str) -> dict[str, Any]:
+    if store.get_course(course_id) is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
+    issues = review_storage.get_scan_issues(course_id)
+    latest_scan = review_storage.get_scan_latest(course_id)
+    return {"course_id": course_id, "scan": latest_scan, "issues": issues}

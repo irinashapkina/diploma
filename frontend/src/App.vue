@@ -21,6 +21,7 @@ const navItems = [
   { to: "/", label: "Обзор" },
   { to: "/courses", label: "Курсы" },
   { to: "/documents", label: "Материалы" },
+  { to: "/review", label: "Актуализация" },
   { to: "/tutor", label: "ИИ-помощник" },
 ];
 </script>
