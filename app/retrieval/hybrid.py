@@ -31,6 +31,7 @@ class HybridRetriever:
         mode: str,
         top_k: int = 8,
         query_forms: list[str] | None = None,
+        visual_query: str | None = None,
     ) -> tuple[list[RetrievalCandidate], dict]:
         if not course_id:
             raise ValueError("course_id is required for retrieval")
@@ -42,10 +43,19 @@ class HybridRetriever:
         chunk_map = {c.chunk_id: c for c in chunks}
         page_map = {p.page_id: p for p in pages}
         combined: dict[str, RetrievalCandidate] = {}
-        debug: dict = {"bm25_hits": [], "dense_hits": [], "visual_hits": []}
+        debug: dict = {
+            "bm25_hits": [],
+            "dense_hits": [],
+            "visual_hits": [],
+            "query_used": query,
+            "query_forms_used": [],
+            "visual_query_used": None,
+            "visual_error": None,
+        }
 
         forms = query_forms or [query]
         for q_form in forms:
+            debug["query_forms_used"].append(q_form)
             bm25_hits = self.bm25.search(q_form, top_k=settings.bm25_top_k)
             for hit in bm25_hits:
                 chunk = chunk_map.get(hit.chunk_id)
@@ -111,37 +121,42 @@ class HybridRetriever:
                 debug["dense_hits"].append({"chunk_id": hit.chunk_id, "score": hit.score})
 
         if mode in {"visual", "hybrid"}:
-            visual_hits = self.visual.search(query, top_k=settings.visual_top_k)
-            for hit in visual_hits:
-                page = page_map.get(hit.page_id)
-                if not page:
-                    continue
-                key = f"visual:{page.page_id}"
-                cand = combined.get(key)
-                if cand is None:
-                    cand = RetrievalCandidate(
-                        candidate_id=key,
-                        source_type="visual",
-                        score=0.0,
-                        document_id=page.document_id,
-                        document_title=page.document_title,
-                        page_id=page.page_id,
-                        page_number=page.page_number,
-                        text=(page.merged_text or page.pdf_text_raw or page.ocr_text_clean)[:900],
-                        image_path=page.image_path,
-                        debug={
-                            "bm25_score": 0.0,
-                            "dense_score": 0.0,
-                            "visual_score": 0.0,
-                            "has_diagram": page.has_diagram,
-                            "text_source": page.text_source,
-                            "pdf_text_quality": page.pdf_text_quality,
-                            "ocr_text_quality": page.ocr_text_quality,
-                        },
-                    )
-                    combined[key] = cand
-                cand.debug["visual_score"] = max(float(cand.debug.get("visual_score", 0.0)), float(hit.score))
-                debug["visual_hits"].append({"page_id": hit.page_id, "score": hit.score})
+            visual_search_query = (visual_query or query).strip()
+            debug["visual_query_used"] = visual_search_query
+            try:
+                visual_hits = self.visual.search(visual_search_query, top_k=settings.visual_top_k)
+                for hit in visual_hits:
+                    page = page_map.get(hit.page_id)
+                    if not page:
+                        continue
+                    key = f"visual:{page.page_id}"
+                    cand = combined.get(key)
+                    if cand is None:
+                        cand = RetrievalCandidate(
+                            candidate_id=key,
+                            source_type="visual",
+                            score=0.0,
+                            document_id=page.document_id,
+                            document_title=page.document_title,
+                            page_id=page.page_id,
+                            page_number=page.page_number,
+                            text=(page.merged_text or page.pdf_text_raw or page.ocr_text_clean)[:900],
+                            image_path=page.image_path,
+                            debug={
+                                "bm25_score": 0.0,
+                                "dense_score": 0.0,
+                                "visual_score": 0.0,
+                                "has_diagram": page.has_diagram,
+                                "text_source": page.text_source,
+                                "pdf_text_quality": page.pdf_text_quality,
+                                "ocr_text_quality": page.ocr_text_quality,
+                            },
+                        )
+                        combined[key] = cand
+                    cand.debug["visual_score"] = max(float(cand.debug.get("visual_score", 0.0)), float(hit.score))
+                    debug["visual_hits"].append({"page_id": hit.page_id, "score": hit.score})
+            except Exception as exc:  # pragma: no cover - defensive guard
+                debug["visual_error"] = str(exc)[:260]
 
         reranked = self.reranker.rerank(query=query, candidates=list(combined.values()), mode=mode, top_k=top_k)
         debug["final_candidates"] = [

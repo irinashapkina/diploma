@@ -57,12 +57,14 @@ class RAGPipeline:
         for selected in sense_decision.selected_sense.values():
             query_forms.append(selected.replace("_", " "))
         route = self.router.decide(q.normalized, processed_query=q)
+        retrieval_query = q.retrieval_queries_academic[0] if q.retrieval_queries_academic else q.normalized
         candidates, retrieval_debug = self.retriever.retrieve(
-            query=question,
+            query=retrieval_query,
             course_id=course_id,
             mode=route.mode,
             top_k=top_k,
             query_forms=query_forms,
+            visual_query=q.visual_query,
         )
         support = self.validator.assess_support(question=question, context_items=candidates, processed_query=q)
         strongest_evidence = self._collect_strongest_evidence(
@@ -142,11 +144,16 @@ class RAGPipeline:
                     "sense_ambiguity": sense_decision.ambiguity,
                     "sense_reasons": sense_decision.reasons,
                     "retrieval": retrieval_debug,
+                    "retrieved_candidates": retrieval_debug.get("final_candidates", []),
+                    "retrieved_query_forms": retrieval_debug.get("query_forms_used", []),
+                    "visual_query_used": retrieval_debug.get("visual_query_used"),
                     "expected_answer_shape": q.expected_answer_shape,
                     "structured_facts": [],
                     "rejected_bad_facts": facts_result.rejected_fragments,
                     "contributing_sources": [],
                     "final_source_selection": {"reason": "refusal", "selected_source_ids": [], "selected_facts": [], "final_sources_count": 0},
+                    "verified_support_sources": [],
+                    "final_user_sources": [],
                     "answer_mode": "refusal",
                     "confidence_breakdown": conf_breakdown,
                     "minimum_grounded_evidence": minimum_evidence,
@@ -165,9 +172,12 @@ class RAGPipeline:
                         "supporting_facts": support.supporting_facts,
                         "reason": support.reason,
                         "has_semantic_alignment": support.has_semantic_alignment,
+                        "aligned_support_sources": support.aligned_sources,
                         "aligned_sources": support.aligned_sources,
                         "definition_supported": support.definition_supported,
                         "definition_term_present": support.definition_term_present,
+                        "definition_gate": support.definition_gate,
+                        "explanation_gate": support.explanation_gate,
                     },
                 }
             response = AskResponse(
@@ -196,6 +206,7 @@ class RAGPipeline:
                     "aligned_sources": support.aligned_sources,
                     "definition_supported": support.definition_supported,
                     "definition_term_present": support.definition_term_present,
+                    "explanation_gate": support.explanation_gate,
                 },
                 validation={},
                 confidence_breakdown=conf_breakdown,
@@ -280,6 +291,12 @@ class RAGPipeline:
             strongest_evidence=strongest_evidence,
             max_sources=max(2, min(top_k, 4)) if top_k > 0 else 3,
         )
+        if safe_answer.strip() and not self._looks_like_refusal(safe_answer) and not final_source_selection.sources:
+            safe_answer = (
+                f"{safe_answer.strip()}\n\n"
+                "Ответ частичный: не удалось надежно верифицировать источники для всех утверждений."
+            )
+            validation = self.validator.validate(answer=safe_answer, context_items=candidates)
         confidence, conf_breakdown = estimate_confidence(
             answer=safe_answer,
             candidates=candidates,
@@ -302,6 +319,9 @@ class RAGPipeline:
                 "sense_reasons": sense_decision.reasons,
                 "expected_answer_shape": q.expected_answer_shape,
                 "retrieval": retrieval_debug,
+                "retrieved_candidates": retrieval_debug.get("final_candidates", []),
+                "retrieved_query_forms": retrieval_debug.get("query_forms_used", []),
+                "visual_query_used": retrieval_debug.get("visual_query_used"),
                 "context": {"text_context_preview": text_context[:2000], "images": image_paths},
                 "structured_facts": [f.__dict__ for f in facts_result.facts],
                 "rejected_bad_facts": facts_result.rejected_fragments,
@@ -309,9 +329,13 @@ class RAGPipeline:
                 "final_source_selection": {
                     "reason": final_source_selection.reason,
                     "selected_source_ids": final_source_selection.selected_source_ids,
+                    "verified_source_ids": final_source_selection.verified_source_ids,
                     "selected_facts": final_source_selection.selected_facts,
+                    "verification_details": final_source_selection.verification_details,
                     "final_sources_count": len(final_source_selection.sources),
                 },
+                "verified_support_sources": final_source_selection.verified_source_ids,
+                "final_user_sources": [s.model_dump() for s in final_source_selection.sources],
                 "likely_multi_source": facts_result.likely_multi_source,
                 "multi_source_fulfilled": facts_result.multi_source_fulfilled,
                 "answer_mode": shaping_plan.answer_mode,
@@ -333,9 +357,12 @@ class RAGPipeline:
                     "supporting_facts": support.supporting_facts,
                     "reason": support.reason,
                     "has_semantic_alignment": support.has_semantic_alignment,
+                    "aligned_support_sources": support.aligned_sources,
                     "aligned_sources": support.aligned_sources,
                     "definition_supported": support.definition_supported,
                     "definition_term_present": support.definition_term_present,
+                    "definition_gate": support.definition_gate,
+                    "explanation_gate": support.explanation_gate,
                 },
                 "validation": {
                     "unsupported_facts": validation.unsupported_facts,
@@ -367,9 +394,12 @@ class RAGPipeline:
                 "coverage": support.coverage,
                 "reason": support.reason,
                 "has_semantic_alignment": support.has_semantic_alignment,
+                "aligned_support_sources": support.aligned_sources,
                 "aligned_sources": support.aligned_sources,
                 "definition_supported": support.definition_supported,
                 "definition_term_present": support.definition_term_present,
+                "definition_gate": support.definition_gate,
+                "explanation_gate": support.explanation_gate,
             },
             validation={
                 "unsupported_facts": validation.unsupported_facts,
@@ -441,6 +471,17 @@ class RAGPipeline:
             return bool(
                 support.definition_term_present
                 and (support.definition_supported or has_quality_fact or has_supporting_fact)
+            )
+        if support.question_intent in {"process_explanation", "interaction_explanation", "diagram_explanation", "component_role"}:
+            return bool(
+                (support.explanation_gate.get("entity_present") or support.explanation_gate.get("topic_anchored"))
+                and support.explanation_gate.get("component_coverage")
+                and (
+                    support.explanation_gate.get("relation_or_flow_support")
+                    or support.explanation_gate.get("visual_evidence")
+                )
+                and (support.question_intent != "component_role" or support.explanation_gate.get("role_support"))
+                and support.explanation_gate.get("multi_evidence_support")
             )
         return has_quality_fact or has_supporting_fact or has_aligned_source or has_entity_support or has_overlap_signal or has_fallback_alignment
 

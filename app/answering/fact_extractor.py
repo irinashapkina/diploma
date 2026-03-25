@@ -78,6 +78,9 @@ def extract_structured_facts(
         "composition",
         "diagram_elements",
         "diagram_explanation",
+        "process_explanation",
+        "interaction_explanation",
+        "component_role",
     } or len(processed_query.entities) >= 2
     facts: list[StructuredFact] = []
     rejected: list[str] = []
@@ -137,7 +140,7 @@ def _is_bad_fragment(fragment: str, pq: ProcessedQuery, cand: RetrievalCandidate
     if digits_ratio > 0.35 and pq.question_intent not in {"diagram_elements", "diagram_explanation"}:
         return True
     letters = sum(ch.isalpha() for ch in low)
-    min_letters = 3 if pq.question_intent in {"diagram_elements", "diagram_explanation"} else 10
+    min_letters = 3 if pq.question_intent in {"diagram_elements", "diagram_explanation", "component_role"} else 10
     if letters < min_letters:
         return True
     return False
@@ -149,8 +152,14 @@ def _fragment_relevant(fragment: str, pq: ProcessedQuery) -> bool:
     rel_hit = any(any(alias in txt for alias in RELATION_ALIASES.get(rel, [rel])) for rel in pq.normalized_relations)
     if pq.question_intent in {"definition", "attribute_lookup"}:
         return ent_hit or rel_hit
+    if pq.question_intent == "fact_lookup":
+        return ent_hit or rel_hit or len(fragment.split()) >= 4
     if pq.question_intent in {"comparison", "composition"}:
         return ent_hit or rel_hit or ("," in fragment and len(fragment.split()) >= 4)
+    if pq.question_intent in {"process_explanation", "interaction_explanation", "component_role"}:
+        flow_markers = ("взаимодейств", "связ", "переда", "сначала", "затем", "после", "через", "flow", "interaction")
+        role_markers = ("роль", "функц", "отвеча", "делает", "назначени", "управля")
+        return ent_hit or rel_hit or any(m in txt for m in flow_markers) or any(m in txt for m in role_markers)
     if pq.question_intent in {"diagram_elements", "diagram_explanation"}:
         return ent_hit or rel_hit or any(k in txt for k in _DIAGRAM_LABEL_HINTS) or _looks_like_label_row(fragment)
     return ent_hit or rel_hit
@@ -197,6 +206,8 @@ def _infer_attribute(intent: str, fragment: str) -> str:
         if any(t in txt for t in ["хран", "store", "contains"]):
             return "storage"
         return "attribute"
+    if intent == "fact_lookup":
+        return "fact"
     if intent == "comparison":
         return "difference"
     if intent == "composition":
@@ -205,6 +216,14 @@ def _infer_attribute(intent: str, fragment: str) -> str:
         return "elements"
     if intent == "diagram_explanation":
         return "roles"
+    if intent in {"process_explanation", "interaction_explanation", "component_role"}:
+        if any(t in txt for t in ["взаимодейств", "interaction", "связ", "between"]):
+            return "interaction"
+        if any(t in txt for t in ["сначала", "затем", "после", "этап", "шаг", "then"]):
+            return "flow"
+        if any(t in txt for t in ["роль", "функц", "отвеча", "делает", "назначени", "управля"]):
+            return "role"
+        return "mechanism"
     if intent == "definition":
         return "definition"
     return "fact"
@@ -226,6 +245,16 @@ def _shape_facts_by_intent(facts: list[StructuredFact], pq: ProcessedQuery) -> l
     if pq.question_intent != "comparison":
         if pq.question_intent in {"diagram_elements", "diagram_explanation"}:
             return _prioritize_diagram_facts(facts)
+        if pq.question_intent in {"process_explanation", "interaction_explanation", "component_role"}:
+            return sorted(
+                facts,
+                key=lambda f: (
+                    1 if f.attribute in {"interaction", "flow", "mechanism", "role"} else 0,
+                    1 if any(tok in normalize_text(f.source_phrase) for tok in ["взаимодейств", "связ", "затем", "flow", "роль", "функц"]) else 0,
+                    f.score,
+                ),
+                reverse=True,
+            )
         return facts
     by_entity: dict[str, StructuredFact] = {}
     for fact in facts:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -154,9 +155,28 @@ class VisualPageIndex:
 
     def _encode_text_clip(self, query: str) -> np.ndarray:
         processor, model = self._load_clip()
+        safe_query = self._safe_visual_query(query, max_words=22)
         with torch.no_grad():
-            inputs = processor(text=[query], return_tensors="pt", padding=True)
-            text_features = model.get_text_features(**inputs)
+            try:
+                inputs = processor(
+                    text=[safe_query],
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=77,
+                )
+                text_features = model.get_text_features(**inputs)
+            except Exception as exc:
+                logger.warning("CLIP text encode failed for query_len=%s. Retrying with stronger truncation: %s", len(safe_query), exc)
+                fallback_query = " ".join(safe_query.split()[:18]).strip()
+                inputs = processor(
+                    text=[fallback_query],
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=77,
+                )
+                text_features = model.get_text_features(**inputs)
         vec = text_features[0].detach().cpu().numpy().astype(np.float32)
         vec /= np.linalg.norm(vec) + 1e-9
         return vec
@@ -164,8 +184,9 @@ class VisualPageIndex:
     def _encode_text_colqwen2(self, query: str) -> np.ndarray:
         self._load_colqwen2()
         processor, model = self._colqwen2
+        safe_query = self._safe_visual_query(query, max_words=22)
         with torch.no_grad():
-            batch = processor.process_queries([query]).to(model.device)
+            batch = processor.process_queries([safe_query]).to(model.device)
             emb = model(**batch)
         pooled = emb.mean(dim=1)[0].detach().float().cpu().numpy().astype(np.float32)
         pooled /= np.linalg.norm(pooled) + 1e-9
@@ -178,34 +199,50 @@ class VisualPageIndex:
             return []
 
         runtime_backend = self.active_backend or self.backend
-        if runtime_backend == "colqwen2":
-            try:
-                q = self._encode_text_colqwen2(query)
-            except Exception as exc:
-                logger.warning("ColQwen2 query encoding failed (%s); fallback to CLIP", exc)
-                self.active_backend = "clip"
-                q = self._encode_text_clip(query)
-        else:
-            q = self._encode_text_clip(query)
+        safe_query = self._safe_visual_query(query, max_words=22)
+        try:
+            if runtime_backend == "colqwen2":
+                try:
+                    q = self._encode_text_colqwen2(safe_query)
+                except Exception as exc:
+                    logger.warning("ColQwen2 query encoding failed (%s); fallback to CLIP", exc)
+                    self.active_backend = "clip"
+                    q = self._encode_text_clip(safe_query)
+            else:
+                q = self._encode_text_clip(safe_query)
 
-        if self.embeddings.ndim != 2 or self.embeddings.shape[1] != q.shape[0]:
-            logger.warning(
-                "Visual embedding dimension mismatch: embeddings_shape=%s query_dim=%s backend=%s. "
-                "Trying to rebuild visual embeddings.",
-                getattr(self.embeddings, "shape", None),
-                q.shape[0],
-                runtime_backend,
-            )
-            if not self._rebuild_after_dim_mismatch(expected_dim=q.shape[0]):
-                logger.warning("Visual retrieval disabled for this request due to incompatible index state.")
-                return []
+            if self.embeddings.ndim != 2 or self.embeddings.shape[1] != q.shape[0]:
+                logger.warning(
+                    "Visual embedding dimension mismatch: embeddings_shape=%s query_dim=%s backend=%s. "
+                    "Trying to rebuild visual embeddings.",
+                    getattr(self.embeddings, "shape", None),
+                    q.shape[0],
+                    runtime_backend,
+                )
+                if not self._rebuild_after_dim_mismatch(expected_dim=q.shape[0]):
+                    logger.warning("Visual retrieval disabled for this request due to incompatible index state.")
+                    return []
 
-        scores = self.embeddings @ q
-        idxs = np.argsort(scores)[::-1][:top_k]
-        return [VisualHit(page_id=self.page_ids[i], score=float(scores[i])) for i in idxs if scores[i] > 0]
+            scores = self.embeddings @ q
+            idxs = np.argsort(scores)[::-1][:top_k]
+            return [VisualHit(page_id=self.page_ids[i], score=float(scores[i])) for i in idxs if scores[i] > 0]
+        except Exception as exc:  # pragma: no cover - runtime/deps dependent
+            logger.warning("Visual retrieval disabled for this request due to runtime error: %s", exc)
+            return []
 
     def backend_info(self) -> str:
         return self.active_backend or self.backend
+
+    @staticmethod
+    def _safe_visual_query(query: str, max_words: int = 24) -> str:
+        compact = re.sub(r"\s+", " ", (query or "").strip())
+        compact = re.sub(r"[\"'`]+", " ", compact)
+        compact = re.sub(r"[^\w\s\-а-яА-ЯёЁ]", " ", compact)
+        compact = re.sub(r"\s+", " ", compact).strip()
+        words = [w for w in compact.split() if w]
+        if len(words) > max_words:
+            compact = " ".join(words[:max_words])
+        return compact or "diagram architecture blocks"
 
     def _rebuild_after_dim_mismatch(self, expected_dim: int) -> bool:
         if not self.image_paths:

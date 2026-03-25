@@ -184,3 +184,49 @@ def test_definition_source_verification_works_when_definition_split_across_chunk
     assert 5 in pages
     assert 13 not in pages
     assert 24 not in pages
+
+
+def test_explanatory_sources_keep_only_pages_that_confirm_interaction_claims() -> None:
+    q = normalize_and_expand_query("как взаимодействуют блоки архитектуры фон Неймана")
+    candidates = [
+        _cand("c3", "История развития архитектуры фон Неймана.", score=0.63, page=3, title="Slides"),
+        _cand("c7", "Память хранит команды и данные; устройство управления считывает команду и направляет выполнение в АЛУ.", score=0.56, page=7, title="Slides"),
+        _cand("c8", "После операции АЛУ результат возвращается в память; ввод и вывод подают и получают данные.", score=0.54, page=8, title="Slides"),
+    ]
+    facts_result = extract_structured_facts(q, candidates)
+    support = GroundingValidator().assess_support(q.original, candidates, processed_query=q)
+    result = select_final_sources(
+        processed_query=q,
+        answer=(
+            "Основные блоки: память, устройство управления, АЛУ и ввод-вывод. "
+            "УУ считывает команду из памяти, передает выполнение в АЛУ, после чего результат возвращается в память."
+        ),
+        candidates=candidates,
+        facts_result=facts_result,
+        support=support,
+        strongest_evidence=[candidates[1].text, candidates[2].text],
+    )
+    pages = {s.page for s in result.sources}
+    assert 7 in pages
+    assert 8 in pages
+    assert 3 not in pages
+
+
+def test_explanatory_sources_can_fallback_to_aligned_support_when_claim_check_too_strict() -> None:
+    q = normalize_and_expand_query("что делает алу на схеме архитектуры фон Неймана")
+    candidates = [
+        _cand("v7", "Память, УУ, АЛУ, Ввод, Вывод", score=0.58, source_type="visual", page=7, title="Slides"),
+        _cand("t7", "АЛУ выполняет арифметические и логические операции.", score=0.5, page=7, title="Slides"),
+    ]
+    facts_result = extract_structured_facts(q, candidates)
+    support = GroundingValidator().assess_support(q.original, candidates, processed_query=q)
+    result = select_final_sources(
+        processed_query=q,
+        answer="АЛУ выполняет арифметические и логические операции и работает в связке с другими блоками схемы.",
+        candidates=candidates,
+        facts_result=facts_result,
+        support=support,
+        strongest_evidence=[candidates[1].text],
+    )
+    assert result.sources
+    assert result.reason in {"ok", "aligned_support_fallback"}

@@ -25,9 +25,33 @@ def build_controlled_synthesis_prompt(
 ) -> ShapingPlan:
     facts = facts_result.facts
     strongest_evidence = [e.strip() for e in (strongest_evidence or []) if e.strip()]
+    is_explanatory = processed_query.question_intent in {
+        "process_explanation",
+        "interaction_explanation",
+        "diagram_explanation",
+        "component_role",
+    }
     if not facts:
         if support_has_support and strongest_evidence:
             evidence_block = "\n".join(f"- {line}" for line in strongest_evidence[:5])
+            if is_explanatory:
+                fallback_prompt = (
+                    "Ты учебный ассистент. Нужно объяснить тему студенту простыми словами строго по подтвержденным фрагментам.\n"
+                    "Нельзя придумывать факты и нельзя копировать OCR-обрывки дословно.\n"
+                    "Обязательная структура ответа:\n"
+                    "1) коротко назови тему,\n"
+                    "2) назови основные элементы,\n"
+                    "3) объясни роль каждого элемента,\n"
+                    "4) объясни связи и поток взаимодействия по шагам,\n"
+                    "5) короткий итог в 1 предложении.\n"
+                    "Если вопрос про схему/рисунок, опирайся на найденные элементы схемы и не подменяй ответ общими определениями.\n"
+                    "Если данных для одного из шагов нет, прямо напиши об ограничении.\n\n"
+                    f"Вопрос: {question}\n"
+                    f"Intent: {processed_query.question_intent}\n\n"
+                    f"Strongest evidence:\n{evidence_block}\n\n"
+                    "Верни только краткое, связное, понятное объяснение."
+                )
+                return ShapingPlan(answer_mode="fallback_synthesis", prompt=fallback_prompt)
             fallback_prompt = (
                 "Ты учебный ассистент. Нужно дать аккуратный краткий ответ только по подтвержденным фрагментам.\n"
                 "Эти фрагменты могут быть OCR-шумными, поэтому нельзя копировать их дословно.\n"
@@ -52,6 +76,21 @@ def build_controlled_synthesis_prompt(
     facts_block = _format_facts(facts)
     senses = ", ".join(f"{k} -> {v}" for k, v in selected_sense.items()) or "нет"
     source_phrases = "\n".join(f"- {f.source_phrase}" for f in facts[:8])
+    extra_explanation_rules = ""
+    if is_explanatory:
+        extra_explanation_rules = (
+            "Для explanatory-вопроса отвечай простыми словами и строго по шагам:\n"
+            "1) коротко назови тему,\n"
+            "2) назови основные блоки/элементы,\n"
+            "3) кратко объясни роль каждого,\n"
+            "4) объясни их взаимодействие и поток выполнения,\n"
+            "5) добавь краткий итог в 1 предложении.\n"
+            "Если вопрос про схему/рисунок, опирайся на элементы и подписи найденной схемы.\n"
+            "Не подменяй вопрос про взаимодействие перечислением общих принципов и терминов.\n"
+            "Не перечисляй только названия блоков без объяснения взаимодействий.\n"
+            "Не копируй сырые OCR-фразы, а аккуратно перефразируй подтвержденный смысл.\n"
+            "Если подтверждений недостаточно, честно укажи ограничение.\n"
+        )
     prompt = (
         "Ты учебный ассистент. Разрешено использовать только подтвержденные факты ниже.\n"
         "Нельзя добавлять детали, которых нет в source phrases.\n"
@@ -70,6 +109,7 @@ def build_controlled_synthesis_prompt(
         "2) объединение 2-3 фактов при необходимости,\n"
         "3) без списка источников в конце,\n"
         "4) если данных частично не хватает, явно пометь частичность.\n"
+        f"{extra_explanation_rules}"
         "Ответ должен быть коротким, полезным и строго grounded."
     )
     return ShapingPlan(answer_mode=answer_mode, prompt=prompt)
@@ -127,9 +167,20 @@ def build_fallback_answer_from_facts(processed_query: ProcessedQuery, facts_resu
         phrases = _unique_phrases([f.source_phrase for f in facts])
         if len(phrases) >= 2:
             return f"По материалам: {phrases[0]}, а также {phrases[1]}."
+    if processed_query.question_intent == "fact_lookup":
+        phrases = _unique_phrases([_normalize_phrase(f.source_phrase) for f in facts])
+        return "По материалам перечислены: " + ", ".join(phrases[:6]) + "."
     if processed_query.question_intent == "composition":
         phrases = _unique_phrases([f.source_phrase for f in facts])
         return "По материалам, в состав входят: " + ", ".join(phrases[:6]) + "."
+    if processed_query.question_intent in {"process_explanation", "interaction_explanation", "diagram_explanation", "component_role"}:
+        phrases = _unique_phrases([_normalize_phrase(f.source_phrase) for f in facts])
+        topic = phrases[0] if phrases else "тема"
+        elements = ", ".join(phrases[:3]) if phrases else "элементы не выделены"
+        flow = " затем ".join(phrases[3:5]) if len(phrases) > 3 else ""
+        if flow:
+            return f"Тема: {topic}. Основные элементы: {elements}. По материалам, взаимодействие по шагам: {flow}."
+        return f"Тема: {topic}. Основные элементы: {elements}. По материалам, их связь описана в найденных фрагментах."
     return "По материалам: " + "; ".join(_unique_phrases([f.source_phrase for f in facts])[:4]) + "."
 
 
@@ -141,6 +192,12 @@ def build_fallback_answer_from_evidence(processed_query: ProcessedQuery, stronge
         return "На слайде показаны: " + ", ".join(phrases[:6]) + "."
     if processed_query.question_intent == "comparison" and len(phrases) >= 2:
         return f"По материалам: {phrases[0]}; {phrases[1]}."
+    if processed_query.question_intent == "fact_lookup":
+        return "По материалам перечислены: " + ", ".join(phrases[:6]) + "."
+    if processed_query.question_intent in {"process_explanation", "interaction_explanation", "diagram_explanation", "component_role"}:
+        if len(phrases) >= 2:
+            return f"Тема: {phrases[0]}. Основные элементы и их связь по материалам: {phrases[1]}."
+        return "По материалам, объяснение ограничено: " + phrases[0] + "."
     return phrases[0] if len(phrases[0].split()) >= 3 else "По материалам: " + "; ".join(phrases[:3]) + "."
 
 

@@ -35,6 +35,46 @@ _STOPWORDS = {
     "when",
     "where",
 }
+_EXPLANATION_COMPONENT_MARKERS = (
+    "блок",
+    "компонент",
+    "процессор",
+    "память",
+    "алу",
+    "уу",
+    "control unit",
+    "arithmetic logic unit",
+    "ввод",
+    "вывод",
+    "register",
+    "bus",
+    "шина",
+)
+_EXPLANATION_FLOW_MARKERS = (
+    "взаимодейств",
+    "связ",
+    "переда",
+    "управля",
+    "обрабатыва",
+    "сначала",
+    "затем",
+    "после",
+    "через",
+    "flow",
+    "interaction",
+    "between",
+    "->",
+    "→",
+)
+_ROLE_MARKERS = (
+    "роль",
+    "функц",
+    "отвеча",
+    "управля",
+    "выполня",
+    "назначени",
+    "делает",
+)
 
 
 @dataclass
@@ -63,6 +103,8 @@ class SupportAssessment:
     aligned_sources: list[str] = field(default_factory=list)
     definition_supported: bool = False
     definition_term_present: bool = False
+    definition_gate: dict[str, bool] = field(default_factory=dict)
+    explanation_gate: dict[str, bool] = field(default_factory=dict)
 
 
 class GroundingValidator:
@@ -109,8 +151,10 @@ class GroundingValidator:
         comparison_supported = self._comparison_supported(pq, context_items)
         diagram_supported = self._diagram_supported(pq, context_items)
         composition_supported = self._composition_supported(pq, context_items)
+        explanation_gate = self._explanatory_gate(pq, context_items, entity_hits, relation_hits, supporting_facts, aligned_sources)
         definition_term_present = self._definition_term_present(pq, context_items, q_tokens)
         definition_supported = self._definition_supported(pq, context_items, q_tokens) if definition_term_present else False
+        definition_gate = {"term_present": definition_term_present, "definition_supported": definition_supported}
         literal_support = (
             coverage >= 0.24
             and top_score >= 0.10
@@ -139,9 +183,28 @@ class GroundingValidator:
             and (bool(supporting_facts) or coverage >= 0.12 or len(entity_hits) >= 1)
         )
 
+        explanatory_intents = {"process_explanation", "interaction_explanation", "diagram_explanation", "component_role"}
         if pq.question_intent == "definition":
             has_support = definition_term_present and definition_supported
             answer_allowed = definition_term_present and definition_supported
+        elif pq.question_intent == "fact_lookup":
+            has_support = (entity_coverage >= 0.5 or has_semantic_alignment) and (
+                bool(supporting_facts) or coverage >= 0.14 or bool(relation_hits)
+            )
+            answer_allowed = has_support
+        elif pq.question_intent in explanatory_intents:
+            role_required = pq.question_intent == "component_role"
+            has_support = bool(
+                (explanation_gate.get("entity_present") or explanation_gate.get("topic_anchored"))
+                and explanation_gate.get("component_coverage")
+                and explanation_gate.get("multi_evidence_support")
+                and (not role_required or explanation_gate.get("role_support"))
+                and (
+                    explanation_gate.get("relation_or_flow_support")
+                    or (pq.question_intent == "diagram_explanation" and explanation_gate.get("visual_evidence"))
+                )
+            )
+            answer_allowed = has_support
         else:
             base_support = literal_support or semantic_support or comparison_supported or diagram_supported or composition_supported
             has_support = base_support and minimal_grounded_evidence
@@ -152,6 +215,22 @@ class GroundingValidator:
             reason = "definition_term_not_present"
         elif pq.question_intent == "definition" and not definition_supported:
             reason = "definition_not_supported"
+        elif pq.question_intent == "fact_lookup" and not has_support:
+            reason = "fact_lookup_not_supported"
+        elif pq.question_intent in explanatory_intents and not explanation_gate["entity_present"]:
+            reason = "explanation_entity_not_present"
+            if explanation_gate.get("topic_anchored"):
+                reason = "explanation_entity_implicit_topic_anchor"
+        elif pq.question_intent in explanatory_intents and not explanation_gate["component_coverage"]:
+            reason = "explanation_components_missing"
+        elif pq.question_intent == "component_role" and not explanation_gate.get("role_support"):
+            reason = "component_role_missing"
+        elif pq.question_intent in explanatory_intents and not explanation_gate["relation_or_flow_support"] and not explanation_gate.get(
+            "visual_evidence", False
+        ):
+            reason = "explanation_relation_flow_missing"
+        elif pq.question_intent in explanatory_intents and not explanation_gate["multi_evidence_support"]:
+            reason = "explanation_multi_evidence_missing"
         elif comparison_supported:
             reason = "comparison_supported"
         elif diagram_supported:
@@ -184,6 +263,8 @@ class GroundingValidator:
             aligned_sources=aligned_sources[:8],
             definition_supported=definition_supported,
             definition_term_present=definition_term_present,
+            definition_gate=definition_gate,
+            explanation_gate=explanation_gate,
         )
 
     def validate(self, answer: str, context_items: list[RetrievalCandidate]) -> ValidationResult:
@@ -393,6 +474,72 @@ class GroundingValidator:
             if term_norm and term_norm in context_all:
                 return True
         return False
+
+    @staticmethod
+    def _explanatory_gate(
+        pq: ProcessedQuery,
+        context_items: list[RetrievalCandidate],
+        entity_hits: list[str],
+        relation_hits: list[str],
+        supporting_facts: list[str],
+        aligned_sources: list[str],
+    ) -> dict[str, bool]:
+        if pq.question_intent not in {"process_explanation", "interaction_explanation", "diagram_explanation", "component_role"}:
+            return {
+                "entity_present": False,
+                "topic_anchored": False,
+                "component_coverage": False,
+                "relation_or_flow_support": False,
+                "role_support": False,
+                "multi_evidence_support": False,
+                "visual_evidence": False,
+            }
+
+        joined = " ".join(normalize_text(c.text or "") for c in context_items[:8] if (c.text or "").strip())
+        entity_present = bool(entity_hits)
+        topic_anchored = bool(entity_hits) or bool(pq.component_labels) or bool(aligned_sources)
+        component_hits = {marker for marker in _EXPLANATION_COMPONENT_MARKERS if marker in joined}
+        component_label_hits = {lbl for lbl in pq.component_labels if lbl and lbl in joined}
+        component_coverage = len(component_hits) >= 2 or len(component_label_hits) >= 1
+        relation_or_flow_support = bool(relation_hits) or any(marker in joined for marker in _EXPLANATION_FLOW_MARKERS)
+        role_support = any(marker in joined for marker in _ROLE_MARKERS)
+        visual_evidence = any(
+            c.source_type == "visual" or bool(c.debug.get("has_diagram", False))
+            for c in context_items[:6]
+        )
+
+        source_evidence_ids: set[str] = set()
+        flow_or_component_sources: set[str] = set()
+        for cand in context_items[:8]:
+            txt = normalize_text(cand.text or "")
+            if not txt:
+                continue
+            source_key = f"{cand.document_title}:p{cand.page_number}"
+            has_entity = bool(GroundingValidator._find_entity_hits(txt, pq.entities))
+            has_flow = any(marker in txt for marker in _EXPLANATION_FLOW_MARKERS) or bool(
+                GroundingValidator._find_relation_hits(txt, pq.normalized_relations)
+            )
+            has_components = any(marker in txt for marker in _EXPLANATION_COMPONENT_MARKERS)
+            if has_flow or has_components:
+                flow_or_component_sources.add(source_key)
+            if has_entity and has_flow:
+                source_evidence_ids.add(source_key)
+        multi_evidence_support = (
+            len(source_evidence_ids) >= 2
+            or len(set(aligned_sources)) >= 2
+            or len(supporting_facts) >= 2
+            or (entity_present and len(flow_or_component_sources) >= 2)
+            or (visual_evidence and (len(set(aligned_sources)) >= 1 or len(supporting_facts) >= 1))
+        )
+        return {
+            "entity_present": entity_present,
+            "topic_anchored": topic_anchored,
+            "component_coverage": component_coverage,
+            "relation_or_flow_support": relation_or_flow_support,
+            "role_support": role_support,
+            "multi_evidence_support": multi_evidence_support,
+            "visual_evidence": visual_evidence,
+        }
 
 
 def _contains_alias(context_text: str, alias: str) -> bool:

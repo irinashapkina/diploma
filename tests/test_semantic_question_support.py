@@ -51,7 +51,7 @@ def test_intent_comparison_mixed_ru_en() -> None:
 
 def test_intent_mechanism() -> None:
     q = normalize_and_expand_query("как работает архитектура фон Неймана")
-    assert q.question_intent in {"diagram_explanation", "composition"}
+    assert q.question_intent in {"diagram_explanation", "composition", "process_explanation"}
     assert "von_neumann" in q.entities
 
 
@@ -85,6 +85,46 @@ def test_support_diagram_question_with_visual_evidence() -> None:
     support = validator.assess_support(question=q.original, context_items=context, processed_query=q)
     assert support.answer_allowed is True
     assert support.question_intent in {"diagram_explanation", "diagram_elements"}
+
+
+def test_support_interaction_explanation_requires_components_and_flow() -> None:
+    validator = GroundingValidator()
+    q = normalize_and_expand_query("как взаимодействуют блоки архитектуры фон Неймана")
+    context = [
+        _cand("c1", "В архитектуре фон Неймана память, устройство управления и АЛУ связаны между собой и обмениваются данными.", score=0.44),
+        _cand("c2", "Сначала УУ считывает команду из памяти, затем передает выполнение в АЛУ.", score=0.43, page=2),
+    ]
+    support = validator.assess_support(question=q.original, context_items=context, processed_query=q)
+    assert support.answer_allowed is True
+    assert support.explanation_gate.get("entity_present") is True
+    assert support.explanation_gate.get("component_coverage") is True
+    assert support.explanation_gate.get("relation_or_flow_support") is True
+
+
+def test_support_component_role_requires_role_signal() -> None:
+    validator = GroundingValidator()
+    q = normalize_and_expand_query("какую функцию выполняет устройство управления в архитектуре фон Неймана")
+    context = [
+        _cand("c1", "В архитектуре фон Неймана устройство управления считывает команды из памяти и управляет выполнением операций.", score=0.46),
+        _cand("c2", "АЛУ выполняет арифметические и логические операции.", score=0.41, page=2),
+    ]
+    support = validator.assess_support(question=q.original, context_items=context, processed_query=q)
+    assert support.question_intent in {"component_role", "process_explanation", "interaction_explanation"}
+    assert support.answer_allowed is True
+    assert support.explanation_gate.get("role_support") is True
+
+
+def test_support_component_role_allows_visual_role_without_explicit_flow_phrase() -> None:
+    validator = GroundingValidator()
+    q = normalize_and_expand_query("что делает АЛУ на схеме архитектуры фон Неймана")
+    context = [
+        _cand("v1", "Память, УУ, АЛУ, Ввод, Вывод", source_type="visual", has_diagram=True, score=0.5),
+        _cand("c2", "АЛУ выполняет арифметические и логические операции.", score=0.46),
+    ]
+    support = validator.assess_support(question=q.original, context_items=context, processed_query=q)
+    assert support.question_intent in {"component_role", "diagram_explanation", "interaction_explanation"}
+    assert support.answer_allowed is True
+    assert support.explanation_gate.get("visual_evidence") is True
 
 
 def test_support_paraphrase_ru_en() -> None:

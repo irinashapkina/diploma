@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
+import re
 
 from app.answering.fact_extractor import FactExtractionResult, StructuredFact
 from app.retrieval.query_processing import ENTITY_ALIASES, ENTITY_EXPANSIONS, ProcessedQuery, RELATION_ALIASES
@@ -8,13 +10,17 @@ from app.schemas.models import RetrievalCandidate, SourceItem
 from app.utils.text import normalize_text
 from app.validation.grounding import SupportAssessment
 
+_ANSWER_SENTENCE_SPLIT_RE = re.compile(r"[.!?;\n]+")
+
 
 @dataclass
 class SourceSelectionResult:
     sources: list[SourceItem]
     selected_source_ids: list[str]
+    verified_source_ids: list[str]
     selected_facts: list[dict]
     reason: str
+    verification_details: list[dict] = field(default_factory=list)
 
 
 def select_final_sources(
@@ -28,14 +34,14 @@ def select_final_sources(
     max_sources: int = 4,
 ) -> SourceSelectionResult:
     if not candidates:
-        return SourceSelectionResult(sources=[], selected_source_ids=[], selected_facts=[], reason="no_candidates")
+        return SourceSelectionResult(sources=[], selected_source_ids=[], verified_source_ids=[], selected_facts=[], reason="no_candidates")
     answer_text = (answer or "").strip()
     if not answer_text:
-        return SourceSelectionResult(sources=[], selected_source_ids=[], selected_facts=[], reason="empty_answer")
+        return SourceSelectionResult(sources=[], selected_source_ids=[], verified_source_ids=[], selected_facts=[], reason="empty_answer")
     if _looks_like_refusal(answer_text):
-        return SourceSelectionResult(sources=[], selected_source_ids=[], selected_facts=[], reason="refusal_answer")
+        return SourceSelectionResult(sources=[], selected_source_ids=[], verified_source_ids=[], selected_facts=[], reason="refusal_answer")
     if not support.answer_allowed and not facts_result.facts:
-        return SourceSelectionResult(sources=[], selected_source_ids=[], selected_facts=[], reason="insufficient_support")
+        return SourceSelectionResult(sources=[], selected_source_ids=[], verified_source_ids=[], selected_facts=[], reason="insufficient_support")
 
     evidence_facts = _select_evidence_facts(processed_query, answer_text, facts_result.facts, candidates)
 
@@ -49,6 +55,7 @@ def select_final_sources(
             return SourceSelectionResult(
                 sources=[],
                 selected_source_ids=[],
+                verified_source_ids=[],
                 selected_facts=[_fact_debug_item(f) for f in evidence_facts],
                 reason="comparison_insufficient_entity_coverage",
             )
@@ -57,14 +64,15 @@ def select_final_sources(
     source_to_candidates = _group_candidates_by_source(candidates)
     strongest_norm = [normalize_text(s) for s in (strongest_evidence or []) if s.strip()]
     supporting_norm = [normalize_text(s) for s in (support.supporting_facts or []) if s.strip()]
+    answer_claims_norm = _extract_answer_claims(normalize_text(answer_text), processed_query)
     source_ids: set[str] = set()
+    verification_details: list[dict] = []
     answer_norm = normalize_text(answer_text)
     for source_id, cand in source_to_candidate.items():
         source_text_norm = _source_text_norm(source_to_candidates.get(source_id, [cand]))
         if not source_text_norm:
             continue
-        has_fact = source_id in source_to_facts
-        verified = _source_confirms_answer(
+        verified, verify_reason, verify_metrics = _source_confirms_answer(
             source_id=source_id,
             candidate=cand,
             source_text_norm=source_text_norm,
@@ -73,16 +81,27 @@ def select_final_sources(
             answer_norm=answer_norm,
             strongest_evidence_norm=strongest_norm,
             supporting_facts_norm=supporting_norm,
+            answer_claims_norm=answer_claims_norm,
         )
-        if has_fact or verified:
+        verification_details.append(
+            {
+                "source_id": source_id,
+                "verified": verified,
+                "reason": verify_reason,
+                **verify_metrics,
+            }
+        )
+        if verified:
             source_ids.add(source_id)
 
     if not source_ids:
         return SourceSelectionResult(
             sources=[],
             selected_source_ids=[],
+            verified_source_ids=[],
             selected_facts=[_fact_debug_item(f) for f in evidence_facts],
             reason="no_verified_sources",
+            verification_details=verification_details[:24],
         )
 
     ranked_source_ids = sorted(
@@ -98,6 +117,7 @@ def select_final_sources(
             answer_text=answer_text,
             strongest_evidence_norm=strongest_norm,
             supporting_facts_norm=supporting_norm,
+            answer_claims_norm=answer_claims_norm,
         ),
         reverse=True,
     )
@@ -123,15 +143,19 @@ def select_final_sources(
         return SourceSelectionResult(
             sources=[],
             selected_source_ids=[],
+            verified_source_ids=sorted(source_ids),
             selected_facts=[_fact_debug_item(f) for f in evidence_facts],
             reason="no_candidates_for_evidence_sources",
+            verification_details=verification_details[:24],
         )
 
     return SourceSelectionResult(
         sources=selected_sources,
         selected_source_ids=selected_ids,
+        verified_source_ids=sorted(source_ids),
         selected_facts=[_fact_debug_item(f) for f in evidence_facts],
         reason="ok",
+        verification_details=verification_details[:24],
     )
 
 
@@ -170,6 +194,8 @@ def _fact_matches_intent(fact: StructuredFact, processed_query: ProcessedQuery) 
         return fact.attribute == "components" or relation_ok or (entity_ok and "," in fact.source_phrase)
     if intent in {"diagram_elements", "diagram_explanation"}:
         return fact.source_type == "visual" or relation_ok or entity_ok
+    if intent in {"process_explanation", "interaction_explanation", "component_role"}:
+        return entity_ok and (relation_ok or fact.attribute in {"interaction", "flow", "mechanism", "fact"})
     if intent in {"attribute_lookup", "relation", "mechanism", "explanation"}:
         return entity_ok and (relation_ok or fact.attribute in {"storage", "attribute", "fact"})
     return entity_ok or relation_ok
@@ -213,6 +239,7 @@ def _source_rank(
     answer_text: str,
     strongest_evidence_norm: list[str],
     supporting_facts_norm: list[str],
+    answer_claims_norm: list[str],
 ) -> float:
     cand = source_to_candidate.get(source_id)
     facts = source_to_facts.get(source_id, [])
@@ -230,8 +257,10 @@ def _source_rank(
     aligned_bonus = 0.08 if source_id in set(support.aligned_sources) else 0.0
     strongest_overlap = _best_overlap(source_text_norm, strongest_evidence_norm)
     supporting_overlap = _best_overlap(source_text_norm, supporting_facts_norm)
+    claim_overlap = _best_overlap(source_text_norm, answer_claims_norm)
     strongest_bonus = 0.18 * strongest_overlap
     supporting_bonus = 0.22 * supporting_overlap
+    claim_bonus = 0.25 * claim_overlap
     semantic_bonus = 0.08 if semantic_hit else 0.0
     definition_bonus = 0.16 if processed_query.question_intent == "definition" and _definition_source_match(source_text_norm, cand.text or "", processed_query) else 0.0
     return (
@@ -244,6 +273,7 @@ def _source_rank(
         + aligned_bonus
         + strongest_bonus
         + supporting_bonus
+        + claim_bonus
         + semantic_bonus
         + definition_bonus
         + list_bonus
@@ -251,13 +281,13 @@ def _source_rank(
 
 
 def _intent_source_limit(intent: str) -> int:
-    if intent in {"comparison", "composition", "diagram_elements", "diagram_explanation"}:
+    if intent in {"comparison", "composition", "diagram_elements", "diagram_explanation", "fact_lookup"}:
         return 4
     return 3
 
 
 def _contains_entity(text_norm: str, processed_query: ProcessedQuery) -> bool:
-    if not processed_query.entities:
+    if not processed_query.entities and not processed_query.component_labels:
         return False
     for ent in processed_query.entities:
         aliases = ENTITY_ALIASES.get(ent, [ent]) + ENTITY_EXPANSIONS.get(ent, [])
@@ -391,7 +421,7 @@ def _looks_like_definition_fragment(raw_text: str, text_norm: str) -> bool:
 
 
 def _is_list_question(processed_query: ProcessedQuery) -> bool:
-    if processed_query.question_intent in {"composition", "diagram_elements", "comparison"}:
+    if processed_query.question_intent in {"composition", "diagram_elements", "comparison", "fact_lookup"}:
         return True
     query_text = normalize_text(processed_query.original)
     markers = ("назови", "перечисли", "какие", "принципы", "этапы", "виды", "состав", "из чего состоит")
@@ -433,6 +463,20 @@ def _best_overlap(text_norm: str, evidence_norm: list[str]) -> float:
     return max((_token_overlap_ratio(text_norm, ev) for ev in evidence_norm), default=0.0)
 
 
+def _extract_answer_claims(answer_norm: str, processed_query: ProcessedQuery, max_claims: int = 4) -> list[str]:
+    claims: list[str] = []
+    for part in _ANSWER_SENTENCE_SPLIT_RE.split(answer_norm):
+        sent = normalize_text(part)
+        if len(sent.split()) < 3:
+            continue
+        semantic_hit = _contains_query_semantics(sent, processed_query)
+        if semantic_hit or _token_overlap_ratio(sent, normalize_text(processed_query.original)) >= 0.16:
+            claims.append(sent)
+    if not claims and answer_norm:
+        claims = [answer_norm]
+    return claims[:max_claims]
+
+
 def _definition_source_match(source_text_norm: str, raw_text: str, processed_query: ProcessedQuery) -> bool:
     text_norm = source_text_norm
     if not text_norm:
@@ -466,7 +510,8 @@ def _source_confirms_answer(
     answer_norm: str,
     strongest_evidence_norm: list[str],
     supporting_facts_norm: list[str],
-) -> bool:
+    answer_claims_norm: list[str],
+) -> tuple[bool, str, dict]:
     text_norm = source_text_norm
     if not text_norm:
         return False
@@ -474,22 +519,62 @@ def _source_confirms_answer(
     question_overlap, semantic_hit = _candidate_alignment_to_question(text_norm, processed_query)
     strongest_overlap = _best_overlap(text_norm, strongest_evidence_norm)
     supporting_overlap = _best_overlap(text_norm, supporting_facts_norm)
+    claim_overlap = _best_overlap(text_norm, answer_claims_norm)
     aligned_hit = source_id in set(support.aligned_sources)
+    metrics = {
+        "answer_overlap": round(answer_overlap, 4),
+        "question_overlap": round(question_overlap, 4),
+        "claim_overlap": round(claim_overlap, 4),
+        "supporting_overlap": round(supporting_overlap, 4),
+        "strongest_overlap": round(strongest_overlap, 4),
+        "semantic_hit": bool(semantic_hit),
+        "aligned_hit": bool(aligned_hit),
+        "source_type": candidate.source_type,
+    }
 
     if processed_query.question_intent == "definition":
         if not _definition_source_match(text_norm, candidate.text or "", processed_query):
-            return False
-        return (
+            return False, "definition_fragment_missing", metrics
+        verdict = (
             answer_overlap >= 0.18
+            or claim_overlap >= 0.2
             or supporting_overlap >= 0.2
             or strongest_overlap >= 0.2
             or aligned_hit
         )
+        return verdict, ("definition_verified" if verdict else "definition_overlap_low"), metrics
 
-    return (
-        answer_overlap >= 0.16
-        or supporting_overlap >= 0.2
-        or strongest_overlap >= 0.2
+    if processed_query.question_intent in {"process_explanation", "interaction_explanation", "diagram_explanation", "component_role"}:
+        has_flow_or_visual = (
+            candidate.source_type == "visual"
+            or any(
+                tok in text_norm
+                for tok in ("взаимодейств", "связ", "сначала", "затем", "переда", "направля", "возвращ", "flow", "interaction", "блок")
+            )
+        )
+        metrics["has_flow_or_visual"] = bool(has_flow_or_visual)
+        verdict = (
+            (claim_overlap >= 0.2 or answer_overlap >= 0.2 or supporting_overlap >= 0.22 or strongest_overlap >= 0.22)
+            and has_flow_or_visual
+            and (
+                semantic_hit
+                or question_overlap >= 0.12
+                or aligned_hit
+                or supporting_overlap >= 0.26
+                or strongest_overlap >= 0.26
+            )
+        )
+        return verdict, ("explanatory_verified" if verdict else "explanatory_insufficient_alignment"), metrics
+
+    if not semantic_hit and question_overlap < 0.14:
+        return False, "question_alignment_too_low", metrics
+
+    verdict = (
+        answer_overlap >= 0.2
+        or claim_overlap >= 0.2
+        or supporting_overlap >= 0.24
+        or strongest_overlap >= 0.24
         or (aligned_hit and (semantic_hit or question_overlap >= 0.16))
         or (_is_list_question(processed_query) and _looks_like_list_fragment(candidate.text or "", text_norm) and question_overlap >= 0.14)
     )
+    return verdict, ("general_verified" if verdict else "general_overlap_low"), metrics

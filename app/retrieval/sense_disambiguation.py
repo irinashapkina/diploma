@@ -29,7 +29,7 @@ AMBIGUOUS_SENSES: dict[str, list[SenseOption]] = {
             labels=["random access machine", "машина с произвольным доступом"],
             cues=["machine", "архитектура", "схема", "блок", "alu", "control unit", "аккумулятор", "команда"],
             anti_cues=["оперативная память", "озу", "байт", "ячейка памяти"],
-            intents=["composition", "diagram_elements", "diagram_explanation"],
+            intents=["composition", "diagram_elements", "diagram_explanation", "process_explanation", "interaction_explanation"],
         ),
         SenseOption(
             sense_id="ram_memory",
