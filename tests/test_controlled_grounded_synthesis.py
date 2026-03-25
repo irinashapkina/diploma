@@ -180,3 +180,133 @@ def test_confidence_is_strongly_capped_for_empty_answer() -> None:
         answer_mode="grounded_synthesis",
     )
     assert confidence <= 0.15
+
+
+def test_pipeline_polishes_noisy_ocr_answer_when_support_exists(monkeypatch) -> None:
+    pipeline = RAGPipeline()
+    candidates = [
+        _cand(
+            "c1",
+            "stack primitiv var.. store ;;; 111 ###",
+            score=0.47,
+            source_type="text",
+            page=7,
+        )
+    ]
+    monkeypatch.setattr(
+        pipeline.retriever,
+        "retrieve",
+        lambda **kwargs: (candidates, {"final_candidates": []}),
+    )
+    monkeypatch.setattr(
+        pipeline.validator,
+        "assess_support",
+        lambda question, context_items, processed_query=None: SupportAssessment(
+            has_support=True,
+            answer_allowed=True,
+            coverage=0.52,
+            overlap_terms=["stack", "store"],
+            question_intent="attribute_lookup",
+            entities=["stack"],
+            normalized_relations=["storage"],
+            entity_coverage=1.0,
+            relation_coverage=0.7,
+            source_quality=0.62,
+            supporting_facts=["stack primitiv var store"],
+            reason="semantic_ok",
+        ),
+    )
+
+    def _generate(prompt: str, image_paths: list[str], system_prompt: str | None = None) -> str:
+        if "Отполируй черновой ответ" in prompt:
+            return "По материалам слайда, в стеке хранятся переменные примитивного типа."
+        return "stack primitiv var.. store ;;; 111 ###"
+
+    monkeypatch.setattr(pipeline.answerer, "generate", _generate)
+    monkeypatch.setattr(pipeline.store, "create_ask_message", lambda **kwargs: "msg-polish")
+    monkeypatch.setattr(pipeline.store, "create_answer_sources", lambda **kwargs: None)
+
+    resp = pipeline.ask("что хранится в стеке", course_id="course1", debug=True)
+    assert "примитивного типа" in resp.answer.lower()
+    assert "###" not in resp.answer
+    assert "подходящий источник" not in resp.answer.lower()
+
+
+def test_pipeline_returns_refusal_when_no_supported_source(monkeypatch) -> None:
+    pipeline = RAGPipeline()
+    candidates = [
+        _cand("c1", "Java byte это 8 бит.", score=0.08, page=3),
+    ]
+    monkeypatch.setattr(
+        pipeline.retriever,
+        "retrieve",
+        lambda **kwargs: (candidates, {"final_candidates": []}),
+    )
+    monkeypatch.setattr(
+        pipeline.validator,
+        "assess_support",
+        lambda question, context_items, processed_query=None: SupportAssessment(
+            has_support=False,
+            answer_allowed=False,
+            coverage=0.1,
+            overlap_terms=[],
+            question_intent="comparison",
+            entities=["stack", "heap"],
+            normalized_relations=["compare"],
+            entity_coverage=0.0,
+            relation_coverage=0.0,
+            source_quality=0.15,
+            supporting_facts=[],
+            reason="insufficient_semantic_support",
+        ),
+    )
+    monkeypatch.setattr(pipeline.store, "create_ask_message", lambda **kwargs: "msg-refusal")
+    monkeypatch.setattr(pipeline.store, "create_answer_sources", lambda **kwargs: None)
+
+    resp = pipeline.ask("чем стек отличается от кучи", course_id="course1", debug=True)
+    assert resp.answer == "Подходящий источник в материалах курса не найден. Лучше уточнить вопрос у преподавателя."
+    assert resp.sources == []
+
+
+def test_pipeline_rephrases_answer_from_single_strong_page(monkeypatch) -> None:
+    pipeline = RAGPipeline()
+    candidates = [
+        _cand("c1", "Куча содержит данные ссылочного типа.", score=0.5, page=2),
+    ]
+    monkeypatch.setattr(
+        pipeline.retriever,
+        "retrieve",
+        lambda **kwargs: (candidates, {"final_candidates": []}),
+    )
+    monkeypatch.setattr(
+        pipeline.validator,
+        "assess_support",
+        lambda question, context_items, processed_query=None: SupportAssessment(
+            has_support=True,
+            answer_allowed=True,
+            coverage=0.56,
+            overlap_terms=["куча", "ссылочного"],
+            question_intent="attribute_lookup",
+            entities=["heap"],
+            normalized_relations=["storage"],
+            entity_coverage=1.0,
+            relation_coverage=0.8,
+            source_quality=0.84,
+            supporting_facts=["куча содержит данные ссылочного типа"],
+            reason="semantic_ok",
+        ),
+    )
+
+    def _generate(prompt: str, image_paths: list[str], system_prompt: str | None = None) -> str:
+        if "Отполируй черновой ответ" in prompt:
+            return "По материалам курса, в куче хранятся данные ссылочного типа."
+        return "Куча содержит данные ссылочного типа."
+
+    monkeypatch.setattr(pipeline.answerer, "generate", _generate)
+    monkeypatch.setattr(pipeline.store, "create_ask_message", lambda **kwargs: "msg-single")
+    monkeypatch.setattr(pipeline.store, "create_answer_sources", lambda **kwargs: None)
+
+    resp = pipeline.ask("что хранится в куче", course_id="course1", debug=True)
+    assert "ссылочного типа" in resp.answer.lower()
+    assert len(resp.sources) >= 1
+    assert resp.sources[0].page == 2

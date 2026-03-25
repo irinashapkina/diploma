@@ -159,3 +159,23 @@ def test_confidence_penalizes_empty_and_refusal_answers() -> None:
     )
     assert empty_conf < 0.35
     assert refusal_conf < 0.45
+
+
+def test_definition_requires_term_presence_not_semantic_only() -> None:
+    validator = GroundingValidator()
+    q = normalize_and_expand_query("что такое ооп")
+    context = [_cand("c1", "Объектная модель в Java описывает классы и объекты.", score=0.55)]
+    support = validator.assess_support(question=q.original, context_items=context, processed_query=q)
+    assert support.answer_allowed is False
+    assert support.has_support is False
+    assert support.definition_term_present is False
+
+
+def test_definition_supported_for_ram_with_explicit_definition_phrase() -> None:
+    validator = GroundingValidator()
+    q = normalize_and_expand_query("что такое ram")
+    context = [_cand("c1", "RAM / Random Access Memory – оперативная память (память с произвольным доступом).", score=0.52)]
+    support = validator.assess_support(question=q.original, context_items=context, processed_query=q)
+    assert support.definition_term_present is True
+    assert support.definition_supported is True
+    assert support.answer_allowed is True

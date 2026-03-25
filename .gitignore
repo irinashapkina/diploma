@@ -158,3 +158,12 @@ docker-compose.override.yml
 
 # Node (if frontend added later)
 node_modules/
+.venv/
+__pycache__/
+*.pyc
+.idea/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+.env
+frontend/.env

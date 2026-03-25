@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.retrieval.query_processing import (
     ENTITY_ALIASES,
+    ENTITY_EXPANSIONS,
     RELATION_ALIASES,
     ProcessedQuery,
     normalize_and_expand_query,
@@ -58,6 +59,10 @@ class SupportAssessment:
     source_quality: float
     supporting_facts: list[str]
     reason: str
+    has_semantic_alignment: bool = False
+    aligned_sources: list[str] = field(default_factory=list)
+    definition_supported: bool = False
+    definition_term_present: bool = False
 
 
 class GroundingValidator:
@@ -98,29 +103,63 @@ class GroundingValidator:
         )
         source_quality = self._estimate_source_quality(context_items)
         supporting_facts = self._collect_supporting_facts(context_items, pq.entities, pq.normalized_relations)
+        aligned_sources = self._collect_aligned_sources(context_items, pq, q_tokens)
+        has_semantic_alignment = bool(aligned_sources)
 
         comparison_supported = self._comparison_supported(pq, context_items)
         diagram_supported = self._diagram_supported(pq, context_items)
         composition_supported = self._composition_supported(pq, context_items)
-        literal_support = coverage >= 0.26 and top_score >= 0.10 and len(overlap_terms) >= 1
+        definition_term_present = self._definition_term_present(pq, context_items, q_tokens)
+        definition_supported = self._definition_supported(pq, context_items, q_tokens) if definition_term_present else False
+        literal_support = (
+            coverage >= 0.24
+            and top_score >= 0.10
+            and len(overlap_terms) >= 1
+            and (has_semantic_alignment or bool(supporting_facts) or bool(relation_hits))
+        )
         has_semantic_signals = bool(pq.entities) or bool(pq.normalized_relations)
         semantic_support = has_semantic_signals and entity_coverage >= 0.5 and (
-            relation_coverage >= 0.34 or bool(supporting_facts)
+            relation_coverage >= 0.34 or bool(supporting_facts) or has_semantic_alignment
+        ) and (
+            coverage >= 0.08 or has_semantic_alignment or bool(supporting_facts)
+        )
+        minimal_grounded_evidence = (
+            bool(supporting_facts)
+            or has_semantic_alignment
+            or (len(entity_hits) >= 1 and (len(relation_hits) >= 1 or coverage >= 0.12))
+            or (coverage >= 0.22 and len(overlap_terms) >= 2)
+            or comparison_supported
+            or diagram_supported
+            or composition_supported
         )
         strong_retrieval_support = (
-            top_score >= 0.22 and entity_coverage >= 0.5 and len(supporting_facts) >= 1 and source_quality >= 0.28
+            top_score >= 0.22
+            and source_quality >= 0.28
+            and has_semantic_alignment
+            and (bool(supporting_facts) or coverage >= 0.12 or len(entity_hits) >= 1)
         )
 
-        has_support = literal_support or semantic_support or comparison_supported or diagram_supported or composition_supported
-        answer_allowed = has_support or strong_retrieval_support
+        if pq.question_intent == "definition":
+            has_support = definition_term_present and definition_supported
+            answer_allowed = definition_term_present and definition_supported
+        else:
+            base_support = literal_support or semantic_support or comparison_supported or diagram_supported or composition_supported
+            has_support = base_support and minimal_grounded_evidence
+            answer_allowed = has_support or strong_retrieval_support
 
         reason = "semantic_ok"
-        if comparison_supported:
+        if pq.question_intent == "definition" and not definition_term_present:
+            reason = "definition_term_not_present"
+        elif pq.question_intent == "definition" and not definition_supported:
+            reason = "definition_not_supported"
+        elif comparison_supported:
             reason = "comparison_supported"
         elif diagram_supported:
             reason = "diagram_supported"
         elif composition_supported:
             reason = "composition_supported"
+        elif not minimal_grounded_evidence:
+            reason = "no_grounded_evidence"
         elif literal_support and not semantic_support:
             reason = "literal_ok"
         elif strong_retrieval_support and not has_support:
@@ -141,6 +180,10 @@ class GroundingValidator:
             source_quality=source_quality,
             supporting_facts=supporting_facts[:10],
             reason=reason,
+            has_semantic_alignment=has_semantic_alignment,
+            aligned_sources=aligned_sources[:8],
+            definition_supported=definition_supported,
+            definition_term_present=definition_term_present,
         )
 
     def validate(self, answer: str, context_items: list[RetrievalCandidate]) -> ValidationResult:
@@ -259,6 +302,97 @@ class GroundingValidator:
             score = 0.55 * source_prior + 0.3 * pdf_q + 0.15 * ocr_q
             values.append(max(0.0, min(1.0, score)))
         return sum(values) / max(1, len(values))
+
+    @staticmethod
+    def _collect_aligned_sources(
+        context_items: list[RetrievalCandidate],
+        pq: ProcessedQuery,
+        q_tokens: list[str],
+    ) -> list[str]:
+        aligned: list[str] = []
+        q_term_set = {t for t in q_tokens if len(t) >= 3}
+        for cand in context_items[:6]:
+            text = normalize_text(cand.text or "")
+            if not text:
+                continue
+            c_tokens = {t for t in tokenize_mixed(text) if len(t) >= 3}
+            overlap_count = len(q_term_set & c_tokens)
+            overlap_ratio = overlap_count / max(1, len(q_term_set))
+            entity_ok = GroundingValidator._find_entity_hits(text, pq.entities)
+            relation_ok = GroundingValidator._find_relation_hits(text, pq.normalized_relations)
+            semantic_ok = bool(entity_ok) or bool(relation_ok)
+            if semantic_ok or (overlap_ratio >= 0.18 and overlap_count >= 1):
+                aligned.append(f"{cand.document_title}:p{cand.page_number}")
+        return list(dict.fromkeys(aligned))
+
+    @staticmethod
+    def _definition_supported(
+        pq: ProcessedQuery,
+        context_items: list[RetrievalCandidate],
+        q_tokens: list[str],
+    ) -> bool:
+        if pq.question_intent != "definition":
+            return False
+        definition_markers = (
+            " это ",
+            "—",
+            "–",
+            " - ",
+            " = ",
+            "называется",
+            "определяется",
+            "означает",
+            "расшифров",
+            "definition",
+            "is a",
+            "is an",
+        )
+        target_terms = [t for t in q_tokens if len(t) >= 3 and t not in _STOPWORDS]
+        for cand in context_items[:6]:
+            raw = (cand.text or "").strip()
+            text = normalize_text(raw)
+            if not text:
+                continue
+            has_marker = any(marker in text for marker in definition_markers) or ("—" in raw) or ("–" in raw)
+            if not has_marker:
+                continue
+            if pq.entities:
+                for entity in pq.entities:
+                    aliases = ENTITY_ALIASES.get(entity, [entity]) + ENTITY_EXPANSIONS.get(entity, [])
+                    if any(_contains_alias(text, alias) for alias in aliases):
+                        return True
+            elif any(term in text for term in target_terms):
+                return True
+        return False
+
+    @staticmethod
+    def _definition_term_present(
+        pq: ProcessedQuery,
+        context_items: list[RetrievalCandidate],
+        q_tokens: list[str],
+    ) -> bool:
+        if pq.question_intent != "definition":
+            return False
+        candidate_texts = [normalize_text(c.text or "") for c in context_items[:8] if (c.text or "").strip()]
+        if not candidate_texts:
+            return False
+        context_all = "\n".join(candidate_texts)
+        if pq.entities:
+            for entity in pq.entities:
+                aliases = ENTITY_ALIASES.get(entity, [entity]) + ENTITY_EXPANSIONS.get(entity, [])
+                for alias in aliases:
+                    alias_norm = normalize_text(alias)
+                    if alias_norm and alias_norm in context_all:
+                        return True
+            return False
+        # fallback for unseen terms (e.g. abbreviations not in entity lexicon)
+        intent_markers = {"что", "такое", "означает", "дай", "определение", "расшифруй", "это"}
+        target_terms = [t for t in q_tokens if len(t) >= 2 and t not in _STOPWORDS and t not in intent_markers]
+        for term in target_terms:
+            term_norm = normalize_text(term)
+            if term_norm and term_norm in context_all:
+                return True
+        return False
 
 
 def _contains_alias(context_text: str, alias: str) -> bool:

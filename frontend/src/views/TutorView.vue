@@ -73,16 +73,8 @@ const refusalPatterns = [
 const relevantSources = computed(() => {
   if (!store.answer?.sources?.length) return [];
   const uniqueKeys = new Set<string>();
-  const sorted = [...store.answer.sources]
+  return store.answer.sources
     .filter((source) => source.document_title.trim().length > 0 && Number.isFinite(source.page) && source.page > 0)
-    .sort((a, b) => b.score - a.score);
-  if (!sorted.length) return [];
-
-  const bestScore = sorted[0].score;
-  const minAllowedScore = Math.max(0.35, bestScore * 0.7);
-  const filtered = sorted.filter((source) => source.score >= minAllowedScore);
-
-  return filtered
     .filter((source) => {
       const key = `${source.document_title}::${source.page}`;
       if (uniqueKeys.has(key)) return false;
@@ -96,10 +88,10 @@ const hasConfirmedAnswer = computed(() => {
   if (!store.answer) return false;
   const text = (store.answer.answer || "").trim();
   if (!text) return false;
-  if (store.answer.confidence < 0.55) return false;
+  if (store.answer.confidence < 0.35) return false;
   const lowered = text.toLowerCase();
   if (refusalPatterns.some((pattern) => lowered.includes(pattern))) return false;
-  return relevantSources.value.length > 0;
+  return true;
 });
 
 async function ask() {

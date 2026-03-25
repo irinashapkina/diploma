@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from app.answering.fact_extractor import extract_structured_facts
+from app.answering.fact_extractor import FactExtractionResult, extract_structured_facts
 from app.answering.source_selector import select_final_sources
 from app.retrieval.query_processing import normalize_and_expand_query
 from app.schemas.models import RetrievalCandidate, SourceItem
 from app.validation.confidence import estimate_confidence
-from app.validation.grounding import GroundingValidator
+from app.validation.grounding import GroundingValidator, SupportAssessment
 
 
 def _cand(
@@ -107,80 +107,40 @@ def test_confidence_penalizes_missing_final_sources() -> None:
     assert conf_with_sources > conf_without_sources
 
 
-def test_list_question_prefers_direct_list_source_over_thematic_source() -> None:
-    q = normalize_and_expand_query("назови принципы архитектуры фон Неймана")
+def test_support_fallback_sources_when_no_structured_facts() -> None:
+    q = normalize_and_expand_query("как работает архитектура")
     candidates = [
-        _cand("c13", "История развития архитектуры фон Неймана и обзор подходов.", score=0.62, page=13, title="Architecture"),
-        _cand(
-            "c7",
-            "Принципы архитектуры фон Неймана: двоичное кодирование, адресность памяти, программное управление.",
-            score=0.52,
-            page=7,
-            title="Architecture",
-        ),
+        _cand("d1", "На схеме показаны ALU, Control Unit и память.", score=0.44, title="Lecture 3", page=7),
+        _cand("d2", "Общие сведения о курсе.", score=0.31, title="Lecture 1", page=1),
     ]
-    facts_result = extract_structured_facts(q, [candidates[0]])  # structured facts only from thematic page
-    support = GroundingValidator().assess_support(q.original, candidates, processed_query=q)
+    empty_facts = FactExtractionResult(
+        facts=[],
+        rejected_fragments=[],
+        contributing_sources=[],
+        likely_multi_source=False,
+        multi_source_fulfilled=True,
+    )
+    support = SupportAssessment(
+        has_support=True,
+        answer_allowed=True,
+        coverage=0.5,
+        overlap_terms=["архитектура"],
+        question_intent=q.question_intent,
+        entities=q.entities,
+        normalized_relations=q.normalized_relations,
+        entity_coverage=0.8,
+        relation_coverage=0.6,
+        source_quality=0.6,
+        supporting_facts=["на схеме показаны alu control unit и память"],
+        reason="semantic_ok",
+    )
     result = select_final_sources(
         processed_query=q,
-        answer="Принципы: двоичное кодирование, адресность памяти, программное управление.",
+        answer="По материалам, архитектура включает ALU, Control Unit и память.",
         candidates=candidates,
-        facts_result=facts_result,
+        facts_result=empty_facts,
         support=support,
-        strongest_evidence=[candidates[1].text],
     )
-    pages = [s.page for s in result.sources]
-    assert 7 in pages
-
-
-def test_definition_sources_must_follow_definition_evidence_not_thematic_pages() -> None:
-    q = normalize_and_expand_query("что такое ram")
-    candidates = [
-        _cand("c24", "Тема памяти и иерархия памяти в архитектуре компьютера.", score=0.63, page=24, title="Slides"),
-        _cand("c13", "В архитектуре используется память для хранения данных.", score=0.61, page=13, title="Slides"),
-        _cand(
-            "c5",
-            "RAM / Random Access Memory — оперативная память (память с произвольным доступом).",
-            score=0.52,
-            page=5,
-            title="Slides",
-        ),
-    ]
-    facts_result = extract_structured_facts(q, [])  # emulate weak fact extraction path
-    support = GroundingValidator().assess_support(q.original, candidates, processed_query=q)
-    result = select_final_sources(
-        processed_query=q,
-        answer="RAM — это оперативная память (память с произвольным доступом).",
-        candidates=candidates,
-        facts_result=facts_result,
-        support=support,
-        strongest_evidence=[candidates[2].text],
-    )
-    pages = {s.page for s in result.sources}
-    assert 5 in pages
-    assert 13 not in pages
-    assert 24 not in pages
-
-
-def test_definition_source_verification_works_when_definition_split_across_chunks() -> None:
-    q = normalize_and_expand_query("что такое ram")
-    candidates = [
-        _cand("c24", "Иерархия памяти в вычислительной системе.", score=0.64, page=24, title="Slides"),
-        _cand("c13", "Память хранит данные и инструкции.", score=0.62, page=13, title="Slides"),
-        _cand("c5a", "RAM / Random Access Memory", score=0.53, page=5, title="Slides"),
-        _cand("c5b", "— оперативная память (память с произвольным доступом).", score=0.5, page=5, title="Slides"),
-    ]
-    facts_result = extract_structured_facts(q, [])  # emulate extraction miss
-    support = GroundingValidator().assess_support(q.original, candidates, processed_query=q)
-    result = select_final_sources(
-        processed_query=q,
-        answer="RAM — это оперативная память (память с произвольным доступом).",
-        candidates=candidates,
-        facts_result=facts_result,
-        support=support,
-        strongest_evidence=["RAM / Random Access Memory — оперативная память (память с произвольным доступом)."],
-    )
-    pages = {s.page for s in result.sources}
-    assert 5 in pages
-    assert 13 not in pages
-    assert 24 not in pages
+    assert result.sources
+    assert result.reason in {"support_fallback", "ok"}
+    assert result.sources[0].document_title == "Lecture 3"

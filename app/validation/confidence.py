@@ -27,7 +27,8 @@ def estimate_confidence(
     grounding = 0.35 * validation.grounded_ratio
     partial_penalty = 0.12 if validation.partial else 0.0
     empty_penalty = 0.45 if not text_answer else 0.0
-    refusal_penalty = 0.32 if "недостаточно данных" in text_answer.lower() else 0.0
+    low_answer = text_answer.lower()
+    refusal_penalty = 0.32 if ("недостаточно данных" in low_answer or "подходящий источник" in low_answer) else 0.0
 
     facts_count = len(facts_result.facts) if facts_result else 0
     rejected_count = len(facts_result.rejected_fragments) if facts_result else 0
@@ -52,7 +53,7 @@ def estimate_confidence(
     final_source_bonus = 0.08 * final_source_quality
     no_final_sources_penalty = 0.14 if text_answer and not final_sources else 0.0
     weak_final_sources_penalty = 0.08 if final_sources and final_source_quality < 0.3 else 0.0
-    synthesis_bonus = 0.05 if answer_mode == "grounded_synthesis" and text_answer else 0.0
+    synthesis_bonus = 0.05 if answer_mode in {"grounded_synthesis", "fallback_synthesis"} and text_answer else 0.0
     extractive_bonus = 0.03 if answer_mode == "extractive" and text_answer else 0.0
     partial_mode_penalty = 0.08 if answer_mode == "partial_answer" else 0.0
 
@@ -79,7 +80,7 @@ def estimate_confidence(
     score = max(0.0, min(1.0, conf))
     if not text_answer:
         score = min(score, 0.15)
-    elif "недостаточно данных" in text_answer.lower():
+    elif "недостаточно данных" in low_answer or "подходящий источник" in low_answer:
         score = min(score, 0.35)
     breakdown = {
         "retrieval_quality": round(retrieval_quality, 4),
