@@ -131,10 +131,40 @@ export interface ReviewIssue {
   source_refs: string[];
   status: string;
   created_at: string;
+  apply_result?: ReviewApplyResult;
 }
 
 export interface ReviewIssuesResponse {
   course_id: string;
   scan: Record<string, unknown>;
   issues: ReviewIssue[];
+}
+
+export interface ReviewApplyPayload {
+  apply_to_pdf?: boolean;
+}
+
+export interface ReviewApplyResult {
+  apply_id: string;
+  course_id: string;
+  issue_id: string;
+  status: string;
+  mode_used: "direct_replace" | "overlay_replace" | "annotation_only";
+  fallback_used: boolean;
+  message: string;
+  updated_pdf_path: string | null;
+  source_pdf_path: string | null;
+  page_number: number | null;
+  fragment_id: string | null;
+  created_at: string;
+}
+
+export interface ReviewApplyResponse {
+  status: string;
+  result: ReviewApplyResult;
+}
+
+export interface ReviewAppliesResponse {
+  course_id: string;
+  items: ReviewApplyResult[];
 }

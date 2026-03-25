@@ -20,6 +20,7 @@ from app.schemas.models import AskRequest, AskResponse, CourseRecord, TeacherRec
 from app.services.java_material_review_service import JavaMaterialReviewService
 from app.services.json_review_storage import JsonReviewStorage
 from app.services.reference_sync_service import ReferenceSyncService
+from app.services.review_pdf_apply_service import ReviewPdfApplyService
 from app.utils.logging import setup_logging
 
 setup_logging(logging.INFO)
@@ -45,6 +46,7 @@ pipeline = RAGPipeline()
 review_storage = JsonReviewStorage()
 reference_sync_service = ReferenceSyncService(storage=review_storage)
 java_review_service = JavaMaterialReviewService(store=store, storage=review_storage)
+pdf_apply_service = ReviewPdfApplyService(store=store, storage=review_storage)
 project_root = Path(__file__).resolve().parents[2]
 frontend_dir = project_root / "frontend"
 frontend_dist_dir = frontend_dir / "dist"
@@ -77,6 +79,10 @@ class ReferenceSyncRequest(BaseModel):
 
 class CourseScanRequest(BaseModel):
     use_current_baseline: bool = True
+
+
+class ApplyIssueRequest(BaseModel):
+    apply_to_pdf: bool = True
 
 
 @app.get("/health")
@@ -242,3 +248,23 @@ def get_course_issues(course_id: str) -> dict[str, Any]:
     issues = review_storage.get_scan_issues(course_id)
     latest_scan = review_storage.get_scan_latest(course_id)
     return {"course_id": course_id, "scan": latest_scan, "issues": issues}
+
+
+@app.post("/review/courses/{course_id}/issues/{issue_id}/apply")
+def apply_issue(course_id: str, issue_id: str, req: ApplyIssueRequest) -> dict[str, Any]:
+    if store.get_course(course_id) is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
+    if not req.apply_to_pdf:
+        raise HTTPException(status_code=400, detail="apply_to_pdf must be true for this endpoint.")
+    try:
+        result = pdf_apply_service.apply_issue_to_pdf(course_id=course_id, issue_id=issue_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "ok", "result": result.to_payload()}
+
+
+@app.get("/review/courses/{course_id}/applies")
+def get_apply_results(course_id: str) -> dict[str, Any]:
+    if store.get_course(course_id) is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
+    return {"course_id": course_id, "items": review_storage.get_apply_results(course_id)}

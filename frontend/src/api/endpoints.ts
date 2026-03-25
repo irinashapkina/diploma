@@ -12,6 +12,9 @@ import type {
   ReviewIssuesResponse,
   ReviewReferenceSyncPayload,
   ReviewReferenceSyncResponse,
+  ReviewApplyPayload,
+  ReviewApplyResponse,
+  ReviewAppliesResponse,
   ReviewScanPayload,
   ReviewScanResponse,
   TeacherOut,
@@ -62,4 +65,8 @@ export const api = {
     http.post<ReviewScanResponse>(`/review/courses/${courseId}/scan`, payload).then((r) => r.data),
   getCourseIssues: (courseId: string) =>
     http.get<ReviewIssuesResponse>(`/review/courses/${courseId}/issues`).then((r) => r.data),
+  applyIssue: (courseId: string, issueId: string, payload: ReviewApplyPayload = { apply_to_pdf: true }) =>
+    http.post<ReviewApplyResponse>(`/review/courses/${courseId}/issues/${issueId}/apply`, payload).then((r) => r.data),
+  getCourseApplies: (courseId: string) =>
+    http.get<ReviewAppliesResponse>(`/review/courses/${courseId}/applies`).then((r) => r.data),
 };

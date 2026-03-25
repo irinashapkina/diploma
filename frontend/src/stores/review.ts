@@ -2,7 +2,12 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 
 import { api } from "@/api/endpoints";
-import type { ReviewIssue, ReviewReferenceSyncSummary, ReviewScanSummary } from "@/types/api";
+import type {
+  ReviewApplyResult,
+  ReviewIssue,
+  ReviewReferenceSyncSummary,
+  ReviewScanSummary,
+} from "@/types/api";
 import { errorMessage } from "@/utils/format";
 
 export const useReviewStore = defineStore("review", () => {
@@ -17,6 +22,8 @@ export const useReviewStore = defineStore("review", () => {
   const scanSummary = ref<ReviewScanSummary | null>(null);
   const latestScan = ref<Record<string, unknown> | null>(null);
   const issues = ref<ReviewIssue[]>([]);
+  const applies = ref<ReviewApplyResult[]>([]);
+  const applyingIssueIds = ref<string[]>([]);
 
   async function syncReference(includeConcepts = true) {
     loading.value = true;
@@ -84,6 +91,44 @@ export const useReviewStore = defineStore("review", () => {
     }
   }
 
+  async function applyIssue(courseId: string, issueId: string) {
+    error.value = null;
+    if (!applyingIssueIds.value.includes(issueId)) {
+      applyingIssueIds.value.push(issueId);
+    }
+    try {
+      const response = await api.applyIssue(courseId, issueId, { apply_to_pdf: true });
+      const result = response.result;
+      const issue = issues.value.find((item) => item.issue_id === issueId);
+      if (issue) {
+        issue.status = result.status === "applied" ? "applied" : "review";
+        issue.apply_result = result;
+      }
+      applies.value.unshift(result);
+      return result;
+    } catch (err) {
+      error.value = errorMessage(err);
+      throw err;
+    } finally {
+      applyingIssueIds.value = applyingIssueIds.value.filter((id) => id !== issueId);
+    }
+  }
+
+  async function loadApplies(courseId: string) {
+    loading.value = true;
+    error.value = null;
+    try {
+      const response = await api.getCourseApplies(courseId);
+      applies.value = response.items ?? [];
+      return response;
+    } catch (err) {
+      error.value = errorMessage(err);
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
   return {
     loading,
     error,
@@ -94,9 +139,13 @@ export const useReviewStore = defineStore("review", () => {
     scanSummary,
     latestScan,
     issues,
+    applies,
+    applyingIssueIds,
     syncReference,
     loadBaseline,
     scanCourse,
     loadIssues,
+    applyIssue,
+    loadApplies,
   };
 });

@@ -83,6 +83,47 @@ class JsonReviewStorage:
         payload = self._read_json_or_default(course_dir / "issues.json", {})
         return payload.get("items", [])
 
+    def get_scan_issues_payload(self, course_id: str) -> dict[str, Any]:
+        return self._read_json_or_default(self.scans_dir / course_id / "issues.json", {"scan_id": None, "items": []})
+
+    def save_scan_issues_payload(self, course_id: str, payload: dict[str, Any]) -> None:
+        self._atomic_write_json(self.scans_dir / course_id / "issues.json", payload)
+
+    def update_issue_status(
+        self,
+        course_id: str,
+        issue_id: str,
+        status: str,
+        apply_meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        payload = self.get_scan_issues_payload(course_id)
+        items = payload.get("items", [])
+        updated: dict[str, Any] | None = None
+        for item in items:
+            if item.get("issue_id") != issue_id:
+                continue
+            item["status"] = status
+            if apply_meta:
+                item["apply_result"] = apply_meta
+            updated = item
+            break
+        if updated is None:
+            return None
+        self.save_scan_issues_payload(course_id, payload)
+        return updated
+
+    def save_apply_result(self, course_id: str, apply_result: dict[str, Any]) -> None:
+        course_dir = self.scans_dir / course_id
+        applies_path = course_dir / "applies.json"
+        payload = self._read_json_or_default(applies_path, {"items": []})
+        payload["items"].append(apply_result)
+        self._atomic_write_json(applies_path, payload)
+        self._atomic_write_json(course_dir / "latest_apply.json", apply_result)
+
+    def get_apply_results(self, course_id: str) -> list[dict[str, Any]]:
+        payload = self._read_json_or_default(self.scans_dir / course_id / "applies.json", {"items": []})
+        return payload.get("items", [])
+
     def get_scan_latest(self, course_id: str) -> dict[str, Any]:
         return self._read_json_or_default(self.scans_dir / course_id / "latest_scan.json", {})
 

@@ -101,7 +101,26 @@
             <td>{{ issue.evidence }}</td>
             <td>{{ issue.suggestion || "—" }}</td>
             <td>
-              <button class="secondary action-btn" :disabled="reviewStore.loading">{{ actionLabel(issue.status) }}</button>
+              <div class="row actions-cell">
+                <button
+                  class="secondary action-btn"
+                  :disabled="reviewStore.loading || isApplying(issue.issue_id) || issue.status === 'applied'"
+                  @click="applyIssueToPdf(issue)"
+                >
+                  {{ actionLabel(issue.status, issue.issue_id) }}
+                </button>
+                <a
+                  v-if="downloadUrl(issue)"
+                  class="download-link"
+                  :href="downloadUrl(issue)"
+                  target="_blank"
+                  rel="noopener"
+                  download
+                >
+                  Скачать PDF
+                </a>
+              </div>
+              <p v-if="issue.apply_result?.message" class="issue-meta">{{ issue.apply_result.message }}</p>
             </td>
           </tr>
         </tbody>
@@ -170,6 +189,7 @@ async function showIssues() {
   if (!selectedCourseId.value) return;
   await documentsStore.loadForCourse(selectedCourseId.value);
   await reviewStore.loadIssues(selectedCourseId.value);
+  await reviewStore.loadApplies(selectedCourseId.value);
 }
 
 function statusLabel(status: string) {
@@ -180,9 +200,18 @@ function statusLabel(status: string) {
   return "Новое";
 }
 
-function actionLabel(status: string) {
+function isApplying(issueId: string) {
+  return reviewStore.applyingIssueIds.includes(issueId);
+}
+
+function actionLabel(status: string, issueId: string) {
+  if (isApplying(issueId)) return "Применяем...";
+  return actionLabelBase(status);
+}
+
+function actionLabelBase(status: string) {
   const key = status.toLowerCase();
-  if (key === "applied") return "Выбрано";
+  if (key === "applied") return "Применено";
   if (key === "rejected") return "Открыть";
   if (key === "review") return "Открыть";
   return "Применить";
@@ -201,6 +230,22 @@ function confidenceLabel(issue: ReviewIssue) {
   const value = Number(match[1]);
   if (Number.isNaN(value)) return "";
   return `Уверенность: ${value.toFixed(3)}`;
+}
+
+async function applyIssueToPdf(issue: ReviewIssue) {
+  if (!selectedCourseId.value) return;
+  await reviewStore.applyIssue(selectedCourseId.value, issue.issue_id);
+}
+
+function downloadUrl(issue: ReviewIssue) {
+  const path = issue.apply_result?.updated_pdf_path;
+  if (!path) return "";
+  const marker = "/data/";
+  const idx = path.lastIndexOf(marker);
+  if (idx >= 0) {
+    return path.slice(idx);
+  }
+  return "";
 }
 
 function parseFragment(fragmentId: string) {
@@ -301,6 +346,16 @@ onMounted(() => {
 
 .action-btn {
   min-width: 108px;
+}
+
+.actions-cell {
+  gap: 10px;
+  align-items: center;
+}
+
+.download-link {
+  font-size: 0.88rem;
+  white-space: nowrap;
 }
 
 @media (max-width: 1200px) {
