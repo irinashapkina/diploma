@@ -4,8 +4,10 @@ import { ref } from "vue";
 import { api } from "@/api/endpoints";
 import type {
   ReviewApplyResult,
+  IndexJobOut,
   ReviewIssue,
   ReviewReferenceSyncSummary,
+  ReviewRunOut,
   ReviewScanSummary,
 } from "@/types/api";
 import { errorMessage } from "@/utils/format";
@@ -24,6 +26,8 @@ export const useReviewStore = defineStore("review", () => {
   const issues = ref<ReviewIssue[]>([]);
   const applies = ref<ReviewApplyResult[]>([]);
   const applyingIssueIds = ref<string[]>([]);
+  const reviewRuns = ref<ReviewRunOut[]>([]);
+  const indexJobs = ref<IndexJobOut[]>([]);
 
   async function syncReference(includeConcepts = true) {
     loading.value = true;
@@ -91,6 +95,39 @@ export const useReviewStore = defineStore("review", () => {
     }
   }
 
+  async function loadReviewRuns(courseId: string) {
+    loading.value = true;
+    error.value = null;
+    try {
+      const response = await api.listReviewRuns(courseId);
+      reviewRuns.value = response.items ?? [];
+      return response.items ?? [];
+    } catch (err) {
+      error.value = errorMessage(err);
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function loadFilteredIssues(
+    courseId: string,
+    params?: { document_id?: string; status?: string; severity?: string; issue_type?: string; review_run_id?: string },
+  ) {
+    loading.value = true;
+    error.value = null;
+    try {
+      const response = await api.listReviewIssues(courseId, params);
+      issues.value = response.items ?? [];
+      return issues.value;
+    } catch (err) {
+      error.value = errorMessage(err);
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
   async function applyIssue(courseId: string, issueId: string) {
     error.value = null;
     if (!applyingIssueIds.value.includes(issueId)) {
@@ -129,6 +166,73 @@ export const useReviewStore = defineStore("review", () => {
     }
   }
 
+  async function loadIndexJobs(courseId: string) {
+    loading.value = true;
+    error.value = null;
+    try {
+      const response = await api.listCourseIndexJobs(courseId);
+      indexJobs.value = response.items ?? [];
+      return indexJobs.value;
+    } catch (err) {
+      error.value = errorMessage(err);
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function acceptIssue(issue: ReviewIssue, teacherId: string) {
+    error.value = null;
+    if (!applyingIssueIds.value.includes(issue.issue_id)) {
+      applyingIssueIds.value.push(issue.issue_id);
+    }
+    try {
+      const response = await api.acceptIssue(issue.issue_id, { teacher_id: teacherId });
+      if (response.apply_result) {
+        issue.apply_result = response.apply_result;
+      }
+      issue.status = "applied";
+      return response;
+    } catch (err) {
+      error.value = errorMessage(err);
+      throw err;
+    } finally {
+      applyingIssueIds.value = applyingIssueIds.value.filter((id) => id !== issue.issue_id);
+    }
+  }
+
+  async function editIssue(issue: ReviewIssue, teacherId: string, editedText: string) {
+    error.value = null;
+    if (!applyingIssueIds.value.includes(issue.issue_id)) {
+      applyingIssueIds.value.push(issue.issue_id);
+    }
+    try {
+      const response = await api.editIssue(issue.issue_id, { teacher_id: teacherId, edited_text: editedText });
+      if (response.apply_result) {
+        issue.apply_result = response.apply_result;
+      }
+      issue.suggestion = editedText;
+      issue.status = "applied";
+      return response;
+    } catch (err) {
+      error.value = errorMessage(err);
+      throw err;
+    } finally {
+      applyingIssueIds.value = applyingIssueIds.value.filter((id) => id !== issue.issue_id);
+    }
+  }
+
+  async function rejectIssue(issue: ReviewIssue, teacherId: string) {
+    error.value = null;
+    try {
+      await api.rejectIssue(issue.issue_id, { teacher_id: teacherId });
+      issue.status = "rejected";
+    } catch (err) {
+      error.value = errorMessage(err);
+      throw err;
+    }
+  }
+
   return {
     loading,
     error,
@@ -141,11 +245,19 @@ export const useReviewStore = defineStore("review", () => {
     issues,
     applies,
     applyingIssueIds,
+    reviewRuns,
+    indexJobs,
     syncReference,
     loadBaseline,
     scanCourse,
     loadIssues,
+    loadReviewRuns,
+    loadFilteredIssues,
     applyIssue,
     loadApplies,
+    loadIndexJobs,
+    acceptIssue,
+    editIssue,
+    rejectIssue,
   };
 });

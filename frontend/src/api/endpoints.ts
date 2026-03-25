@@ -15,8 +15,15 @@ import type {
   ReviewApplyPayload,
   ReviewApplyResponse,
   ReviewAppliesResponse,
+  ReviewDecisionPayload,
+  ReviewDecisionResponse,
+  ReviewEditPayload,
+  ReviewIssueListResponse,
+  ReviewRunsResponse,
   ReviewScanPayload,
   ReviewScanResponse,
+  DocumentVersionsResponse,
+  IndexJobsResponse,
   TeacherOut,
   TutorAnswerResponse,
   UploadResponse,
@@ -65,8 +72,24 @@ export const api = {
     http.post<ReviewScanResponse>(`/review/courses/${courseId}/scan`, payload).then((r) => r.data),
   getCourseIssues: (courseId: string) =>
     http.get<ReviewIssuesResponse>(`/review/courses/${courseId}/issues`).then((r) => r.data),
+  listReviewRuns: (courseId: string) =>
+    http.get<ReviewRunsResponse>(`/courses/${courseId}/review-runs`).then((r) => r.data),
+  listReviewIssues: (
+    courseId: string,
+    params?: { document_id?: string; status?: string; severity?: string; issue_type?: string; review_run_id?: string },
+  ) => http.get<ReviewIssueListResponse>(`/courses/${courseId}/review-issues`, { params }).then((r) => r.data),
   applyIssue: (courseId: string, issueId: string, payload: ReviewApplyPayload = { apply_to_pdf: true }) =>
     http.post<ReviewApplyResponse>(`/review/courses/${courseId}/issues/${issueId}/apply`, payload).then((r) => r.data),
   getCourseApplies: (courseId: string) =>
     http.get<ReviewAppliesResponse>(`/review/courses/${courseId}/applies`).then((r) => r.data),
+  acceptIssue: (issueId: string, payload: ReviewDecisionPayload = {}) =>
+    http.post<ReviewDecisionResponse>(`/review-issues/${issueId}/accept`, payload).then((r) => r.data),
+  editIssue: (issueId: string, payload: ReviewEditPayload) =>
+    http.post<ReviewDecisionResponse>(`/review-issues/${issueId}/edit`, payload).then((r) => r.data),
+  rejectIssue: (issueId: string, payload: ReviewDecisionPayload = {}) =>
+    http.post<ReviewDecisionResponse>(`/review-issues/${issueId}/reject`, payload).then((r) => r.data),
+  listDocumentVersions: (documentId: string) =>
+    http.get<DocumentVersionsResponse>(`/documents/${documentId}/versions`).then((r) => r.data),
+  listCourseIndexJobs: (courseId: string) =>
+    http.get<IndexJobsResponse>(`/courses/${courseId}/index-jobs`).then((r) => r.data),
 };

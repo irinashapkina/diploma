@@ -124,6 +124,10 @@ export interface ReviewIssue {
   fragment_id: string;
   issue_type: string;
   severity: string;
+  claim_role?: string | null;
+  confidence?: number | null;
+  claim_text?: string | null;
+  claim_span?: unknown;
   detected_text: string;
   normalized_text: string;
   evidence: string;
@@ -167,4 +171,88 @@ export interface ReviewApplyResponse {
 export interface ReviewAppliesResponse {
   course_id: string;
   items: ReviewApplyResult[];
+}
+
+export interface ReviewRunOut {
+  review_run_id: string;
+  course_id: string;
+  baseline_id: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  stats: Record<string, unknown>;
+}
+
+export interface ReviewRunsResponse {
+  course_id: string;
+  items: ReviewRunOut[];
+}
+
+export interface ReviewIssueListResponse {
+  course_id: string;
+  items: ReviewIssue[];
+}
+
+export interface ReviewDecisionPayload {
+  teacher_id?: string | null;
+  comment?: string | null;
+}
+
+export interface ReviewEditPayload extends ReviewDecisionPayload {
+  edited_text: string;
+}
+
+export interface ReviewDecisionResult {
+  decision_id: string;
+  issue_id: string;
+  teacher_id: string;
+  decision_type: "accept" | "edit" | "reject";
+  edited_text: string | null;
+  comment: string | null;
+  created_at: string;
+}
+
+export interface ReviewDecisionResponse {
+  status: string;
+  decision: ReviewDecisionResult;
+  apply_result?: ReviewApplyResult;
+}
+
+export interface DocumentVersionOut {
+  document_version_id: string;
+  document_id: string;
+  version_no: number;
+  is_active: boolean;
+  parent_version_id: string | null;
+  created_from_issue_id: string | null;
+  storage_path: string;
+  content_hash: string | null;
+  meta_json: Record<string, unknown>;
+  created_by_teacher_id: string | null;
+  created_at: string;
+}
+
+export interface DocumentVersionsResponse {
+  document_id: string;
+  items: DocumentVersionOut[];
+}
+
+export interface IndexJobOut {
+  index_job_id: string;
+  course_id: string;
+  document_id: string | null;
+  document_version_id: string | null;
+  baseline_id: string | null;
+  reason: string;
+  status: "queued" | "running" | "done" | "failed";
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error_text: string | null;
+  stats_json: Record<string, unknown>;
+}
+
+export interface IndexJobsResponse {
+  course_id: string;
+  items: IndexJobOut[];
 }

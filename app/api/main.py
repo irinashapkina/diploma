@@ -21,6 +21,7 @@ from app.services.java_material_review_service import JavaMaterialReviewService
 from app.services.json_review_storage import JsonReviewStorage
 from app.services.reference_sync_service import ReferenceSyncService
 from app.services.review_pdf_apply_service import ReviewPdfApplyService
+from app.services.review_workflow_service import ReviewWorkflowService
 from app.utils.logging import setup_logging
 
 setup_logging(logging.INFO)
@@ -47,6 +48,7 @@ review_storage = JsonReviewStorage()
 reference_sync_service = ReferenceSyncService(storage=review_storage)
 java_review_service = JavaMaterialReviewService(store=store, storage=review_storage)
 pdf_apply_service = ReviewPdfApplyService(store=store, storage=review_storage)
+review_workflow_service = ReviewWorkflowService(store=store, storage=review_storage, pdf_apply=pdf_apply_service)
 project_root = Path(__file__).resolve().parents[2]
 frontend_dir = project_root / "frontend"
 frontend_dist_dir = frontend_dir / "dist"
@@ -83,6 +85,15 @@ class CourseScanRequest(BaseModel):
 
 class ApplyIssueRequest(BaseModel):
     apply_to_pdf: bool = True
+
+
+class ReviewDecisionRequest(BaseModel):
+    teacher_id: str | None = None
+    comment: str | None = None
+
+
+class ReviewEditDecisionRequest(ReviewDecisionRequest):
+    edited_text: str
 
 
 @app.get("/health")
@@ -220,6 +231,25 @@ def sync_reference(req: ReferenceSyncRequest) -> dict[str, Any]:
     return {"status": "ok", "summary": summary}
 
 
+@app.post("/review/reference-sync")
+def sync_reference_v2(req: ReferenceSyncRequest) -> dict[str, Any]:
+    summary = reference_sync_service.sync(include_concepts=req.include_concepts)
+    return {"status": "ok", "summary": summary}
+
+
+@app.get("/review/baselines")
+def list_baselines() -> dict[str, Any]:
+    return {"items": review_storage.list_baselines()}
+
+
+@app.get("/review/baselines/active")
+def get_active_baseline() -> dict[str, Any]:
+    payload = review_storage.get_active_baseline()
+    if not payload:
+        raise HTTPException(status_code=404, detail="Active baseline not found.")
+    return payload
+
+
 @app.get("/review/reference/baseline")
 def get_reference_baseline(run_id: str | None = None) -> dict[str, Any]:
     payload = review_storage.get_reference_snapshot(run_id) if run_id else review_storage.get_reference_baseline()
@@ -241,6 +271,18 @@ def scan_course_materials(course_id: str, req: CourseScanRequest) -> dict[str, A
     return {"status": "ok", "summary": summary}
 
 
+@app.post("/courses/{course_id}/review-runs")
+def run_course_review(course_id: str, req: CourseScanRequest) -> dict[str, Any]:
+    return scan_course_materials(course_id=course_id, req=req)
+
+
+@app.get("/courses/{course_id}/review-runs")
+def get_course_review_runs(course_id: str) -> dict[str, Any]:
+    if store.get_course(course_id) is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
+    return {"course_id": course_id, "items": review_storage.list_review_runs(course_id)}
+
+
 @app.get("/review/courses/{course_id}/issues")
 def get_course_issues(course_id: str) -> dict[str, Any]:
     if store.get_course(course_id) is None:
@@ -248,6 +290,36 @@ def get_course_issues(course_id: str) -> dict[str, Any]:
     issues = review_storage.get_scan_issues(course_id)
     latest_scan = review_storage.get_scan_latest(course_id)
     return {"course_id": course_id, "scan": latest_scan, "issues": issues}
+
+
+@app.get("/courses/{course_id}/review-issues")
+def get_course_review_issues(
+    course_id: str,
+    document_id: str | None = None,
+    status: str | None = None,
+    severity: str | None = None,
+    issue_type: str | None = None,
+    review_run_id: str | None = None,
+) -> dict[str, Any]:
+    if store.get_course(course_id) is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
+    items = review_storage.list_review_issues(
+        course_id=course_id,
+        document_id=document_id,
+        status=status,
+        severity=severity,
+        issue_type=issue_type,
+        review_run_id=review_run_id,
+    )
+    return {"course_id": course_id, "items": items}
+
+
+@app.get("/review-issues/{issue_id}")
+def get_review_issue(issue_id: str) -> dict[str, Any]:
+    issue = review_storage.get_review_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue not found: {issue_id}")
+    return issue
 
 
 @app.post("/review/courses/{course_id}/issues/{issue_id}/apply")
@@ -263,8 +335,84 @@ def apply_issue(course_id: str, issue_id: str, req: ApplyIssueRequest) -> dict[s
     return {"status": "ok", "result": result.to_payload()}
 
 
+@app.post("/review-issues/{issue_id}/accept")
+def accept_issue(issue_id: str, req: ReviewDecisionRequest) -> dict[str, Any]:
+    issue = review_storage.get_review_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue not found: {issue_id}")
+    course = store.get_course(issue["course_id"])
+    if course is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {issue['course_id']}")
+    teacher_id = req.teacher_id or course.teacher_id
+    try:
+        payload = review_workflow_service.accept_issue(issue_id=issue_id, teacher_id=teacher_id, comment=req.comment)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "ok", **payload}
+
+
+@app.post("/review-issues/{issue_id}/edit")
+def edit_issue(issue_id: str, req: ReviewEditDecisionRequest) -> dict[str, Any]:
+    issue = review_storage.get_review_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue not found: {issue_id}")
+    course = store.get_course(issue["course_id"])
+    if course is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {issue['course_id']}")
+    teacher_id = req.teacher_id or course.teacher_id
+    try:
+        payload = review_workflow_service.edit_issue(
+            issue_id=issue_id,
+            teacher_id=teacher_id,
+            edited_text=req.edited_text,
+            comment=req.comment,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "ok", **payload}
+
+
+@app.post("/review-issues/{issue_id}/reject")
+def reject_issue(issue_id: str, req: ReviewDecisionRequest) -> dict[str, Any]:
+    issue = review_storage.get_review_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue not found: {issue_id}")
+    course = store.get_course(issue["course_id"])
+    if course is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {issue['course_id']}")
+    teacher_id = req.teacher_id or course.teacher_id
+    try:
+        payload = review_workflow_service.reject_issue(issue_id=issue_id, teacher_id=teacher_id, comment=req.comment)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "ok", **payload}
+
+
 @app.get("/review/courses/{course_id}/applies")
 def get_apply_results(course_id: str) -> dict[str, Any]:
     if store.get_course(course_id) is None:
         raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
     return {"course_id": course_id, "items": review_storage.get_apply_results(course_id)}
+
+
+@app.get("/documents/{document_id}/versions")
+def get_document_versions(document_id: str) -> dict[str, Any]:
+    document = store.get_document(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+    return {"document_id": document_id, "items": review_storage.list_document_versions(document_id)}
+
+
+@app.get("/index-jobs/{job_id}")
+def get_index_job(job_id: str) -> dict[str, Any]:
+    payload = review_storage.get_index_job(job_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail=f"Index job not found: {job_id}")
+    return payload
+
+
+@app.get("/courses/{course_id}/index-jobs")
+def list_course_index_jobs(course_id: str) -> dict[str, Any]:
+    if store.get_course(course_id) is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
+    return {"course_id": course_id, "items": review_storage.list_index_jobs(course_id)}

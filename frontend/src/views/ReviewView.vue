@@ -104,10 +104,24 @@
               <div class="row actions-cell">
                 <button
                   class="secondary action-btn"
-                  :disabled="reviewStore.loading || isApplying(issue.issue_id) || issue.status === 'applied'"
-                  @click="applyIssueToPdf(issue)"
+                  :disabled="reviewStore.loading || isApplying(issue.issue_id) || issue.status === 'applied' || issue.status === 'rejected'"
+                  @click="acceptIssue(issue)"
                 >
-                  {{ actionLabel(issue.status, issue.issue_id) }}
+                  {{ acceptLabel(issue.status, issue.issue_id) }}
+                </button>
+                <button
+                  class="secondary action-btn"
+                  :disabled="reviewStore.loading || isApplying(issue.issue_id) || issue.status === 'rejected'"
+                  @click="editIssue(issue)"
+                >
+                  Редактировать
+                </button>
+                <button
+                  class="secondary action-btn"
+                  :disabled="reviewStore.loading || issue.status === 'applied' || issue.status === 'rejected'"
+                  @click="rejectIssue(issue)"
+                >
+                  Отклонить
                 </button>
                 <a
                   v-if="downloadUrl(issue)"
@@ -121,6 +135,7 @@
                 </a>
               </div>
               <p v-if="issue.apply_result?.message" class="issue-meta">{{ issue.apply_result.message }}</p>
+              <p v-if="latestIndexStatus(issue)" class="issue-meta">{{ latestIndexStatus(issue) }}</p>
             </td>
           </tr>
         </tbody>
@@ -188,8 +203,13 @@ async function runScan() {
 async function showIssues() {
   if (!selectedCourseId.value) return;
   await documentsStore.loadForCourse(selectedCourseId.value);
-  await reviewStore.loadIssues(selectedCourseId.value);
+  await reviewStore.loadFilteredIssues(selectedCourseId.value, {
+    document_id: documentFilter.value || undefined,
+    status: statusFilter.value || undefined,
+    issue_type: typeFilter.value || undefined,
+  });
   await reviewStore.loadApplies(selectedCourseId.value);
+  await reviewStore.loadIndexJobs(selectedCourseId.value);
 }
 
 function statusLabel(status: string) {
@@ -204,17 +224,17 @@ function isApplying(issueId: string) {
   return reviewStore.applyingIssueIds.includes(issueId);
 }
 
-function actionLabel(status: string, issueId: string) {
+function acceptLabel(status: string, issueId: string) {
   if (isApplying(issueId)) return "Применяем...";
-  return actionLabelBase(status);
+  return acceptLabelBase(status);
 }
 
-function actionLabelBase(status: string) {
+function acceptLabelBase(status: string) {
   const key = status.toLowerCase();
   if (key === "applied") return "Применено";
-  if (key === "rejected") return "Открыть";
-  if (key === "review") return "Открыть";
-  return "Применить";
+  if (key === "rejected") return "Отклонено";
+  if (key === "review") return "На проверке";
+  return "Принять";
 }
 
 function sourceLabel(issue: ReviewIssue) {
@@ -232,9 +252,23 @@ function confidenceLabel(issue: ReviewIssue) {
   return `Уверенность: ${value.toFixed(3)}`;
 }
 
-async function applyIssueToPdf(issue: ReviewIssue) {
-  if (!selectedCourseId.value) return;
-  await reviewStore.applyIssue(selectedCourseId.value, issue.issue_id);
+async function acceptIssue(issue: ReviewIssue) {
+  if (!selectedCourseId.value || !teacherId.value) return;
+  await reviewStore.acceptIssue(issue, teacherId.value);
+  await reviewStore.loadIndexJobs(selectedCourseId.value);
+}
+
+async function editIssue(issue: ReviewIssue) {
+  if (!selectedCourseId.value || !teacherId.value) return;
+  const edited = window.prompt("Введите финальный текст правки", issue.suggestion || issue.claim_text || "");
+  if (!edited || !edited.trim()) return;
+  await reviewStore.editIssue(issue, teacherId.value, edited.trim());
+  await reviewStore.loadIndexJobs(selectedCourseId.value);
+}
+
+async function rejectIssue(issue: ReviewIssue) {
+  if (!teacherId.value) return;
+  await reviewStore.rejectIssue(issue, teacherId.value);
 }
 
 function downloadUrl(issue: ReviewIssue) {
@@ -246,6 +280,17 @@ function downloadUrl(issue: ReviewIssue) {
     return path.slice(idx);
   }
   return "";
+}
+
+function latestIndexStatus(issue: ReviewIssue) {
+  const related = reviewStore.indexJobs.find(
+    (job) => job.document_id && job.document_id === parseFragment(issue.fragment_id).documentId,
+  );
+  if (!related) return "";
+  if (related.status === "done") return "Переиндексация: завершена";
+  if (related.status === "failed") return `Переиндексация: ошибка (${related.error_text || "unknown"})`;
+  if (related.status === "running") return "Переиндексация: выполняется";
+  return "Переиндексация: в очереди";
 }
 
 function parseFragment(fragmentId: string) {
@@ -271,6 +316,8 @@ onMounted(() => {
     void coursesStore.loadFromBackend();
   }
 });
+
+const teacherId = computed(() => coursesStore.selectedCourse?.teacher_id || "");
 </script>
 
 <style scoped>

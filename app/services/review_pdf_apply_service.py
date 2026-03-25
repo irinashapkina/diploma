@@ -11,6 +11,9 @@ from typing import Any
 import fitz
 
 from app.config.settings import settings
+from app.db.models import DocumentDB, MaterialRevisionDB, PageDB, ReviewIssueDB
+from app.db.session import SessionLocal
+from app.indexing.index_manager import IndexManager
 from app.indexing.store import ArtifactStore
 from app.services.json_review_storage import JsonReviewStorage
 
@@ -59,12 +62,21 @@ class ReviewPdfApplyService:
     def __init__(self, store: ArtifactStore, storage: JsonReviewStorage) -> None:
         self.store = store
         self.storage = storage
+        self.index_manager = IndexManager(store=store)
 
-    def apply_issue_to_pdf(self, course_id: str, issue_id: str) -> ApplyResult:
-        issues_payload = self.storage.get_scan_issues_payload(course_id)
-        issue = next((item for item in issues_payload.get("items", []) if item.get("issue_id") == issue_id), None)
+    def apply_issue_to_pdf(
+        self,
+        course_id: str,
+        issue_id: str,
+        teacher_id: str | None = None,
+        applied_text_override: str | None = None,
+        decision_id: str | None = None,
+    ) -> ApplyResult:
+        issue = self.storage.get_review_issue(issue_id)
         if issue is None:
             raise ValueError(f"Issue not found: {issue_id}")
+        if issue.get("course_id") != course_id:
+            raise ValueError("Issue does not belong to requested course.")
 
         fragment_id = str(issue.get("fragment_id") or "")
         mapping = _parse_fragment_id(fragment_id)
@@ -80,7 +92,7 @@ class ReviewPdfApplyService:
         if not source_pdf.exists():
             return self._fallback_only(course_id, issue_id, issue, "Исходный PDF не найден на диске.")
 
-        suggestion = str(issue.get("suggestion") or "").strip()
+        suggestion = str(applied_text_override or issue.get("suggestion") or "").strip()
         applicability = self._is_locally_applicable(issue, suggestion)
         mode = "annotation_only"
         fallback_used = True
@@ -116,6 +128,23 @@ class ReviewPdfApplyService:
             logger.warning("PDF apply failed for issue %s: %s", issue_id, exc)
             return self._fallback_only(course_id, issue_id, issue, f"PDF patch failed: {exc}")
 
+        if suggestion and issue.get("claim_text"):
+            self._apply_text_revision_to_page(
+                course_id=course_id,
+                document_id=document_id,
+                page_number=page_number,
+                claim_text=str(issue.get("claim_text")),
+                replacement=suggestion,
+            )
+
+        version = self.storage.create_document_version(
+            document_id=document_id,
+            storage_path=str(updated_pdf_path.as_posix()) if updated_pdf_path else str(source_pdf.as_posix()),
+            created_from_issue_id=issue_id,
+            created_by_teacher_id=teacher_id,
+            meta={"mode": mode, "fallback_used": fallback_used},
+        )
+
         result = ApplyResult(
             apply_id=str(uuid.uuid4()),
             course_id=course_id,
@@ -130,8 +159,24 @@ class ReviewPdfApplyService:
             fragment_id=fragment_id,
             created_at=_utc_now_iso(),
         )
-        self.storage.save_apply_result(course_id, result.to_payload())
-        self.storage.update_issue_status(course_id, issue_id, "applied" if not fallback_used else "review", result.to_payload())
+        result_payload = result.to_payload() | {"document_version_id": version["document_version_id"]}
+        self.storage.save_apply_result(course_id, result_payload)
+        self.storage.update_issue_status(course_id, issue_id, "applied" if not fallback_used else "review", result_payload)
+        self._create_material_revision(
+            course_id=course_id,
+            issue_id=issue_id,
+            document_id=document_id,
+            document_version_id=version["document_version_id"],
+            decision_id=decision_id,
+            suggestion=suggestion,
+            mode=mode,
+            fallback_used=fallback_used,
+            message=message,
+            updated_pdf_path=result.updated_pdf_path,
+            teacher_id=teacher_id,
+            status="applied" if not fallback_used else "partial",
+        )
+        self._reindex_document(course_id=course_id, document_id=document_id, document_version_id=version["document_version_id"])
         return result
 
     def _try_replace_on_page(self, page: fitz.Page, issue: dict[str, Any], suggestion: str) -> str | None:
@@ -212,6 +257,99 @@ class ReviewPdfApplyService:
         self.storage.save_apply_result(course_id, result.to_payload())
         self.storage.update_issue_status(course_id, issue_id, "review", result.to_payload())
         return result
+
+    def _apply_text_revision_to_page(
+        self,
+        course_id: str,
+        document_id: str,
+        page_number: int,
+        claim_text: str,
+        replacement: str,
+    ) -> None:
+        if not claim_text or not replacement:
+            return
+        with SessionLocal() as db:
+            page = (
+                db.query(PageDB)
+                .filter(PageDB.course_id == course_id, PageDB.document_id == document_id, PageDB.page_number == page_number)
+                .first()
+            )
+            if page is None:
+                return
+            merged_text = page.merged_text or ""
+            if claim_text in merged_text:
+                merged_text = merged_text.replace(claim_text, replacement, 1)
+            elif claim_text in (page.ocr_text_clean or ""):
+                merged_text = (page.ocr_text_clean or "").replace(claim_text, replacement, 1)
+            else:
+                return
+            page.merged_text = merged_text
+            page.ocr_text_clean = merged_text
+            db.commit()
+
+    def _create_material_revision(
+        self,
+        course_id: str,
+        issue_id: str,
+        document_id: str,
+        document_version_id: str,
+        decision_id: str | None,
+        suggestion: str,
+        mode: str,
+        fallback_used: bool,
+        message: str,
+        updated_pdf_path: str | None,
+        teacher_id: str | None,
+        status: str,
+    ) -> None:
+        with SessionLocal() as db:
+            issue = db.get(ReviewIssueDB, issue_id)
+            if issue is None:
+                return
+            db_doc = db.get(DocumentDB, document_id)
+            if db_doc is not None:
+                # Active document path points to latest reviewed derivative for downstream consumers.
+                db_doc.source_pdf_path = updated_pdf_path or db_doc.source_pdf_path
+            db.add(
+                MaterialRevisionDB(
+                    id=str(uuid.uuid4()),
+                    course_id=course_id,
+                    document_id=document_id,
+                    document_version_id=document_version_id,
+                    source_issue_id=issue_id,
+                    decision_id=decision_id,
+                    revision_type="pdf_overlay" if mode in {"direct_replace", "overlay_replace"} else "pdf_annotation",
+                    apply_mode=mode,
+                    original_text=issue.claim_text,
+                    applied_text=suggestion or issue.suggestion_text,
+                    location_json={
+                        "fragment_id": issue.fragment_id,
+                        "page_number": issue.page_number,
+                        "claim_span": issue.claim_span_json,
+                    },
+                    fallback_used=fallback_used,
+                    message=message,
+                    applied_by_teacher_id=teacher_id,
+                    status=status,
+                )
+            )
+            db.commit()
+
+    def _reindex_document(self, course_id: str, document_id: str, document_version_id: str) -> None:
+        baseline_id = self.storage.get_baseline_db_id()
+        job_id = self.storage.create_index_job(
+            course_id=course_id,
+            reason="review_apply",
+            document_id=document_id,
+            document_version_id=document_version_id,
+            baseline_id=baseline_id,
+        )
+        try:
+            self.storage.update_index_job(job_id, "running")
+            result = self.index_manager.index_document(course_id=course_id, document_id=document_id)
+            self.storage.update_index_job(job_id, "done", stats_json=result)
+        except Exception as exc:
+            self.storage.update_index_job(job_id, "failed", error_text=str(exc))
 
 
 def _parse_fragment_id(fragment_id: str) -> tuple[str, int] | None:

@@ -142,3 +142,166 @@ class AnswerSourceDB(Base):
     score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     snippet: Mapped[str] = mapped_column(Text, nullable=False, default="")
     used_in_final_answer: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class ReferenceBaselineRunDB(Base):
+    __tablename__ = "reference_baseline_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    technology: Mapped[str] = mapped_column(String(32), nullable=False, default="java")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    summary_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    baseline_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    raw_facts_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    normalized_facts_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    baseline_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class ReviewRunDB(Base):
+    __tablename__ = "review_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    course_id: Mapped[str] = mapped_column(String(36), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    baseline_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("reference_baseline_runs.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    triggered_by_teacher_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("teachers.id", ondelete="RESTRICT"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    started_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finished_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stats_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ReviewIssueDB(Base):
+    __tablename__ = "review_issues"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    review_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("review_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    baseline_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("reference_baseline_runs.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    course_id: Mapped[str] = mapped_column(String(36), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_version_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("document_versions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fragment_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    issue_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    claim_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    claim_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claim_span_json: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+    detected_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    normalized_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_user: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_debug_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    suggestion_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggestion_debug_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    source_refs_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="open", index=True)
+    superseded_by_issue_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("review_issues.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ReviewDecisionDB(Base):
+    __tablename__ = "review_decisions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    issue_id: Mapped[str] = mapped_column(String(36), ForeignKey("review_issues.id", ondelete="CASCADE"), nullable=False, index=True)
+    teacher_id: Mapped[str] = mapped_column(String(36), ForeignKey("teachers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    decision_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    edited_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class DocumentVersionDB(Base):
+    __tablename__ = "document_versions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    parent_version_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("document_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    created_from_issue_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    meta_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by_teacher_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("teachers.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("document_id", "version_no", name="uq_document_version_no"),
+    )
+
+
+class MaterialRevisionDB(Base):
+    __tablename__ = "material_revisions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    course_id: Mapped[str] = mapped_column(String(36), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_version_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_issue_id: Mapped[str] = mapped_column(String(36), ForeignKey("review_issues.id", ondelete="CASCADE"), nullable=False, index=True)
+    decision_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("review_decisions.id", ondelete="SET NULL"), nullable=True)
+    revision_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    apply_mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    original_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    applied_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    location_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    fallback_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    applied_by_teacher_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("teachers.id", ondelete="RESTRICT"), nullable=True
+    )
+    applied_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="applied")
+
+
+class IndexJobDB(Base):
+    __tablename__ = "index_jobs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    course_id: Mapped[str] = mapped_column(String(36), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    document_version_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("document_versions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    baseline_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("reference_baseline_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", index=True)
+    queued_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    started_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stats_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class ApplyOperationDB(Base):
+    __tablename__ = "apply_operations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    course_id: Mapped[str] = mapped_column(String(36), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    issue_id: Mapped[str] = mapped_column(String(36), ForeignKey("review_issues.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mode_used: Mapped[str] = mapped_column(String(24), nullable=False)
+    fallback_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    updated_pdf_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_pdf_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
