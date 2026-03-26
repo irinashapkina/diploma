@@ -53,6 +53,8 @@ class DocumentRecord(BaseModel):
     document_title: str
     source_pdf: str
     page_count: int
+    mime_type: str = "application/pdf"
+    source_filename: str = ""
 
 
 class PageRecord(BaseModel):
@@ -66,7 +68,7 @@ class PageRecord(BaseModel):
     ocr_text_raw: str
     ocr_text_clean: str
     merged_text: str = ""
-    text_source: Literal["pdf", "ocr", "pdf+ocr"] = "ocr"
+    text_source: Literal["pdf", "ocr", "pdf+ocr", "docx", "pptx"] = "ocr"
     pdf_text_quality: float = 0.0
     ocr_text_quality: float = 0.0
     language: Literal["ru", "en", "mixed", "unknown"]

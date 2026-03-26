@@ -261,11 +261,11 @@ class JavaMaterialReviewService:
                 continue
 
             severity = "high" if is_current_state_role(claim.role) else "medium"
-            replacement = f"{mention.technology} {recommended}"
+            replacement = recommended
             suggestion = _replace_inside_claim(
                 claim.claim_text,
                 claim_span=claim.claim_span,
-                target_span=TextSpan(mention.alias_span.start, mention.version_span.end),
+                target_span=mention.version_span,
                 replacement=replacement,
             )
             evidence = (
@@ -289,9 +289,9 @@ class JavaMaterialReviewService:
                     slot_updates=[
                         {
                             "kind": "version",
-                            "start": mention.alias_span.start,
+                            "start": mention.version_span.start,
                             "end": mention.version_span.end,
-                            "from": mention.matched_text,
+                            "from": mention.version,
                             "to": replacement,
                         }
                     ],
@@ -500,6 +500,7 @@ class JavaMaterialReviewService:
                 "claim_text": issue.get("claim_text"),
                 "claim_role": issue.get("claim_role"),
                 "detected_text": issue.get("detected_text"),
+                "suggestion_text": issue.get("suggestion"),
                 "slot_updates": issue.get("slot_updates") or [],
                 "source_refs": issue.get("source_refs") or [],
                 "reference_backed": bool(issue.get("reference_backed")),
@@ -507,7 +508,14 @@ class JavaMaterialReviewService:
             }
             should_refine_evidence = issue.get("issue_type") in {
                 "CURRENT_CLAIM_OUTDATED",
+                "TECH_VERSION_OUTDATED",
+                "DATE_ACADEMIC_YEAR_MISMATCH",
                 "PERSON_DATES_INCORRECT",
+            } or issue.get("issue_family") in {
+                "outdated",
+                "metadata",
+                "terminology",
+                "biography",
             } or issue.get("claim_role") == "ambiguous_claim"
             if should_refine_evidence:
                 rendered = self.llm.render_evidence(evidence_payload)

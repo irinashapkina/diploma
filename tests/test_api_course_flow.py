@@ -140,3 +140,47 @@ def test_non_existing_course_errors() -> None:
         raise AssertionError("Expected exception for missing course")
     except Exception:
         pass
+
+
+def test_upload_docx_uses_docx_ingestor(monkeypatch) -> None:
+    _, course_id = _create_teacher_and_course()
+
+    def _fake_ingest_docx(tmp_path, course_id: str, title: str | None = None, uploader_teacher_id=None, source_filename=None):  # noqa: ANN001
+        return DocumentRecord(
+            document_id=str(uuid.uuid4()),
+            course_id=course_id,
+            document_title=title or "Docx",
+            source_pdf=f"/tmp/{uuid.uuid4()}.docx",
+            page_count=2,
+            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            source_filename=source_filename or "material.docx",
+        )
+
+    monkeypatch.setattr(ingestor, "ingest_docx", _fake_ingest_docx)
+    upload = UploadFile(filename="material.docx", file=io.BytesIO(b"PK\x03\x04fake-docx"))
+    result = asyncio.run(upload_document(course_id=course_id, file=upload))
+
+    assert result["status"] == "uploaded"
+    assert result["document"]["mime_type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def test_upload_pptx_uses_pptx_ingestor(monkeypatch) -> None:
+    _, course_id = _create_teacher_and_course()
+
+    def _fake_ingest_pptx(tmp_path, course_id: str, title: str | None = None, uploader_teacher_id=None, source_filename=None):  # noqa: ANN001
+        return DocumentRecord(
+            document_id=str(uuid.uuid4()),
+            course_id=course_id,
+            document_title=title or "Slides",
+            source_pdf=f"/tmp/{uuid.uuid4()}.pptx",
+            page_count=3,
+            mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            source_filename=source_filename or "slides.pptx",
+        )
+
+    monkeypatch.setattr(ingestor, "ingest_pptx", _fake_ingest_pptx)
+    upload = UploadFile(filename="slides.pptx", file=io.BytesIO(b"PK\x03\x04fake-pptx"))
+    result = asyncio.run(upload_document(course_id=course_id, file=upload))
+
+    assert result["status"] == "uploaded"
+    assert result["document"]["mime_type"] == "application/vnd.openxmlformats-officedocument.presentationml.presentation"

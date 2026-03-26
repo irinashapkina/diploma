@@ -144,25 +144,54 @@ def list_courses(teacher_id: str | None = None) -> dict[str, Any]:
 
 @app.post("/courses/{course_id}/documents/upload")
 async def upload_document(course_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required.")
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in {".pdf", ".docx", ".pptx"}:
+        raise HTTPException(status_code=400, detail="Supported formats: PDF, DOCX, PPTX.")
     if store.get_course(course_id) is None:
         raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
         content = await file.read()
         tmp.write(content)
         tmp_path = Path(tmp.name)
     try:
-        doc = ingestor.ingest_pdf(
-            tmp_path,
-            course_id=course_id,
-            title=Path(file.filename).stem,
-            source_filename=file.filename,
-        )
+        if file_ext == ".pdf":
+            try:
+                doc = ingestor.ingest_pdf(
+                    tmp_path,
+                    course_id=course_id,
+                    title=Path(file.filename).stem,
+                    source_filename=file.filename,
+                )
+            except TypeError:
+                # Backward-compatible fallback for patched/mocked ingestors
+                doc = ingestor.ingest_pdf(tmp_path, course_id=course_id, title=Path(file.filename).stem)
+        elif file_ext == ".docx":
+            doc = ingestor.ingest_docx(
+                tmp_path,
+                course_id=course_id,
+                title=Path(file.filename).stem,
+                source_filename=file.filename,
+            )
+        else:
+            doc = ingestor.ingest_pptx(
+                tmp_path,
+                course_id=course_id,
+                title=Path(file.filename).stem,
+                source_filename=file.filename,
+            )
     except TypeError:
-        # Backward-compatible fallback for patched/mocked ingestors
-        doc = ingestor.ingest_pdf(tmp_path, course_id=course_id, title=Path(file.filename).stem)
-    tmp_path.unlink(missing_ok=True)
+        if file_ext == ".docx":
+            doc = ingestor.ingest_docx(tmp_path, course_id=course_id, title=Path(file.filename).stem)
+        elif file_ext == ".pptx":
+            doc = ingestor.ingest_pptx(tmp_path, course_id=course_id, title=Path(file.filename).stem)
+        else:
+            raise
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return {"status": "uploaded", "document": doc.model_dump()}
 
 

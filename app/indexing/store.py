@@ -201,10 +201,10 @@ class ArtifactStore:
                     course_id=document.course_id,
                     uploader_teacher_id=uploader_teacher_id,
                     title=document.document_title,
-                    source_filename=source_filename or document.document_title,
+                    source_filename=source_filename or document.source_filename or document.document_title,
                     source_pdf_path=document.source_pdf,
                     checksum_sha256=checksum_sha256 or document.document_id,
-                    mime_type="application/pdf",
+                    mime_type=document.mime_type or "application/pdf",
                     size_bytes=None,
                     page_count=document.page_count,
                     status="uploaded",
@@ -247,6 +247,8 @@ class ArtifactStore:
                 document_title=r.title,
                 source_pdf=r.source_pdf_path,
                 page_count=r.page_count,
+                mime_type=r.mime_type or "application/pdf",
+                source_filename=r.source_filename or "",
             )
             for r in rows
         ]
@@ -257,6 +259,16 @@ class ArtifactStore:
             if doc.document_id == document_id:
                 return doc
         return None
+
+    def get_document_mime_type(self, document_id: str) -> str | None:
+        if self._legacy:
+            doc = self.get_document(document_id)
+            return doc.mime_type if doc else None
+        with SessionLocal() as db:
+            row = db.get(DocumentDB, document_id)
+        if row is None:
+            return None
+        return row.mime_type or "application/pdf"
 
     def create_pages(self, pages: list[PageRecord]) -> None:
         if not pages:
@@ -294,6 +306,78 @@ class ArtifactStore:
                         has_large_image=p.has_large_image,
                     )
                 )
+            db.commit()
+
+    def replace_pages_for_document(self, course_id: str, document_id: str, pages: list[PageRecord]) -> None:
+        if self._legacy:
+            existing_pages: list[PageRecord] = []
+            for raw in read_jsonl(self.pages_path):
+                try:
+                    page = PageRecord(**raw)
+                except Exception:
+                    continue
+                if page.course_id == course_id and page.document_id == document_id:
+                    continue
+                existing_pages.append(page)
+            existing_pages.extend(pages)
+            write_jsonl(self.pages_path, [p.model_dump() for p in existing_pages])
+
+            existing_chunks = self.list_chunks(course_id=course_id)
+            kept_chunks = [c for c in existing_chunks if c.document_id != document_id]
+            all_chunks: list[ChunkRecord] = []
+            for raw in read_jsonl(self.chunks_path):
+                if raw.get("course_id") == course_id:
+                    continue
+                try:
+                    all_chunks.append(ChunkRecord(**raw))
+                except Exception:
+                    continue
+            all_chunks.extend(kept_chunks)
+            write_jsonl(self.chunks_path, [c.model_dump() for c in all_chunks])
+            return
+
+        with SessionLocal() as db:
+            db.execute(delete(PageDB).where(PageDB.course_id == course_id, PageDB.document_id == document_id))
+            for p in pages:
+                db.add(
+                    PageDB(
+                        id=p.page_id,
+                        course_id=p.course_id,
+                        document_id=p.document_id,
+                        page_number=p.page_number,
+                        image_path=p.image_path,
+                        pdf_text_raw=p.pdf_text_raw,
+                        ocr_text_raw=p.ocr_text_raw,
+                        ocr_text_clean=p.ocr_text_clean,
+                        merged_text=p.merged_text,
+                        text_source=p.text_source,
+                        pdf_text_quality=p.pdf_text_quality,
+                        ocr_text_quality=p.ocr_text_quality,
+                        language=p.language,
+                        has_diagram=p.has_diagram,
+                        has_table=p.has_table,
+                        has_code_like_text=p.has_code_like_text,
+                        has_large_image=p.has_large_image,
+                    )
+                )
+            db.commit()
+
+    def update_document_source_and_page_count(self, document_id: str, source_path: str, page_count: int) -> None:
+        if self._legacy:
+            docs = self.list_documents()
+            for idx, doc in enumerate(docs):
+                if doc.document_id != document_id:
+                    continue
+                docs[idx] = doc.model_copy(update={"source_pdf": source_path, "page_count": page_count})
+                break
+            write_jsonl(self.documents_path, [d.model_dump() for d in docs])
+            return
+        with SessionLocal() as db:
+            row = db.get(DocumentDB, document_id)
+            if row is None:
+                raise ValueError(f"Document not found: {document_id}")
+            row.source_pdf_path = source_path
+            row.page_count = page_count
             db.commit()
 
     def list_pages(self, course_id: str | None = None, document_id: str | None = None) -> list[PageRecord]:

@@ -18,10 +18,14 @@ CURRENT_MARKERS =(
 "сейчас",
 "текущ",
 "актуаль",
+"текущая версия",
+"актуальная версия",
 "на сегодня",
 "today",
 "current",
+"current version",
 "latest",
+"latest version",
 "modern",
 )
 HISTORICAL_MARKERS =(
