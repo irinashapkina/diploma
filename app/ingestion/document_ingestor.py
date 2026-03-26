@@ -48,7 +48,7 @@ class DocumentIngestor:
                 source_filename=source_filename,
             )
         if ext == ".docx":
-            return self._ingest_docx(
+            return self.pdf_ingestor.ingest_docx(
                 source_path=source_path,
                 course_id=course_id,
                 title=title,
@@ -56,7 +56,7 @@ class DocumentIngestor:
                 source_filename=source_filename,
             )
         if ext == ".pptx":
-            return self._ingest_pptx(
+            return self.pdf_ingestor.ingest_pptx(
                 source_path=source_path,
                 course_id=course_id,
                 title=title,
@@ -80,10 +80,22 @@ class DocumentIngestor:
         title: str | None = None,
         uploader_teacher_id: str | None = None,
         source_filename: str | None = None,
-    ) -> DocumentRecord:
+    ) -> tuple[DocumentRecord, bool]:
         ext = source_path.suffix.lower()
         if ext not in VIDEO_EXTENSIONS:
             raise ValueError(f"Unsupported video format: {ext}")
+        checksum = _sha256_file(source_path)
+        existing = self.store.get_document_by_checksum(course_id=course_id, checksum_sha256=checksum)
+        if existing is not None:
+            if not (existing.mime_type or "").lower().startswith("video/"):
+                raise ValueError("This file is already uploaded as a non-video document in the same course.")
+            status = (existing.status or "uploaded").lower()
+            if status in {"failed", "error"}:
+                self.store.update_document_status(existing.document_id, status="transcribing", error_message=None)
+                existing.status = "transcribing"
+                return existing, True
+            return existing, False
+
         document_id, copied = self._copy_source(source_path, course_id, ext)
         doc_title = title or source_path.stem
         document = DocumentRecord(
@@ -94,18 +106,15 @@ class DocumentIngestor:
             page_count=0,
             mime_type=_mime_for_ext(ext),
             status="uploaded",
+            material_type="video",
         )
-        checksum = hashlib.sha256(copied.read_bytes()).hexdigest()
         self.store.create_document(
             document,
             uploader_teacher_id=uploader_teacher_id,
             source_filename=source_filename or source_path.name,
             checksum_sha256=checksum,
-            mime_type=document.mime_type,
         )
-        self.store.update_document_status(document.document_id, status="transcribing")
-        document.status = "transcribing"
-        return document
+        return document, True
 
     def process_video_document(self, document_id: str, course_id: str) -> DocumentRecord:
         document = self.store.get_document(document_id)
@@ -121,7 +130,9 @@ class DocumentIngestor:
             document_title=document.document_title,
             segments=segments,
         )
-        self.store.create_pages(pages)
+        if not pages:
+            raise RuntimeError("Video transcription produced no text segments for indexing.")
+        self.store.replace_pages_for_document(course_id=course_id, document_id=document_id, pages=pages)
         chunks = self.chunker.chunk_pages(pages)
         self.store.upsert_chunks_for_document(course_id=course_id, document_id=document_id, chunks=chunks)
         self.store.update_document_status(document_id, status="ingested", page_count=len(pages))
@@ -133,6 +144,7 @@ class DocumentIngestor:
             page_count=len(pages),
             mime_type=getattr(document, "mime_type", _mime_for_ext(source_path.suffix.lower())),
             status="ingested",
+            material_type="video",
         )
 
     def ingest_video(
@@ -143,133 +155,18 @@ class DocumentIngestor:
         uploader_teacher_id: str | None = None,
         source_filename: str | None = None,
     ) -> DocumentRecord:
-        doc = self.prepare_video_upload(
+        doc, should_process = self.prepare_video_upload(
             source_path=source_path,
             course_id=course_id,
             title=title,
             uploader_teacher_id=uploader_teacher_id,
             source_filename=source_filename,
         )
+        if not should_process:
+            return doc
+        self.store.update_document_status(doc.document_id, status="transcribing", error_message=None)
         return self.process_video_document(doc.document_id, course_id=course_id)
 
-    def _ingest_docx(
-        self,
-        source_path: Path,
-        course_id: str,
-        title: str | None,
-        uploader_teacher_id: str | None,
-        source_filename: str | None,
-    ) -> DocumentRecord:
-        try:
-            from docx import Document as DocxDocument
-        except Exception as exc:  # pragma: no cover - dependency may be missing
-            raise RuntimeError("python-docx is not installed. Add python-docx to requirements.") from exc
-
-        document_id, copied = self._copy_source(source_path, course_id, ".docx")
-        doc_title = title or source_path.stem
-        payload = DocxDocument(copied)
-        units: list[str] = []
-
-        for para in payload.paragraphs:
-            text = (para.text or "").strip()
-            if text:
-                units.append(text)
-
-        for table in payload.tables:
-            for row in table.rows:
-                row_text = " | ".join((cell.text or "").strip() for cell in row.cells if (cell.text or "").strip())
-                if row_text:
-                    units.append(row_text)
-
-        pages = self._build_text_units_as_pages(
-            course_id=course_id,
-            document_id=document_id,
-            document_title=doc_title,
-            units=units,
-            unit_prefix="block",
-        )
-        checksum = hashlib.sha256(copied.read_bytes()).hexdigest()
-        document = DocumentRecord(
-            document_id=document_id,
-            course_id=course_id,
-            document_title=doc_title,
-            source_pdf=path_to_str(copied.resolve()),
-            page_count=len(pages),
-        )
-        self.store.create_document(
-            document,
-            uploader_teacher_id=uploader_teacher_id,
-            source_filename=source_filename or source_path.name,
-            checksum_sha256=checksum,
-            mime_type=DOCX_MIME,
-        )
-        self.store.create_pages(pages)
-        chunks = self.chunker.chunk_pages(pages)
-        self.store.upsert_chunks_for_document(course_id=course_id, document_id=document_id, chunks=chunks)
-        self.store.update_document_status(document_id, status="ingested")
-        logger.info("Ingested DOCX %s units for %s", len(pages), doc_title)
-        return document
-
-    def _ingest_pptx(
-        self,
-        source_path: Path,
-        course_id: str,
-        title: str | None,
-        uploader_teacher_id: str | None,
-        source_filename: str | None,
-    ) -> DocumentRecord:
-        try:
-            from pptx import Presentation
-        except Exception as exc:  # pragma: no cover - dependency may be missing
-            raise RuntimeError("python-pptx is not installed. Add python-pptx to requirements.") from exc
-
-        document_id, copied = self._copy_source(source_path, course_id, ".pptx")
-        doc_title = title or source_path.stem
-        prs = Presentation(copied)
-        units: list[str] = []
-        for slide in prs.slides:
-            parts: list[str] = []
-            for shape in slide.shapes:
-                if hasattr(shape, "text") and shape.text:
-                    value = str(shape.text).strip()
-                    if value:
-                        parts.append(value)
-            notes = ""
-            if slide.has_notes_slide and slide.notes_slide and slide.notes_slide.notes_text_frame:
-                notes = (slide.notes_slide.notes_text_frame.text or "").strip()
-            slide_text = "\n".join(parts).strip()
-            if notes:
-                slide_text = f"{slide_text}\nNotes: {notes}".strip()
-            units.append(slide_text if slide_text else f"Slide {len(units) + 1}")
-
-        pages = self._build_text_units_as_pages(
-            course_id=course_id,
-            document_id=document_id,
-            document_title=doc_title,
-            units=units,
-            unit_prefix="slide",
-        )
-        checksum = hashlib.sha256(copied.read_bytes()).hexdigest()
-        document = DocumentRecord(
-            document_id=document_id,
-            course_id=course_id,
-            document_title=doc_title,
-            source_pdf=path_to_str(copied.resolve()),
-            page_count=len(pages),
-        )
-        self.store.create_document(
-            document,
-            uploader_teacher_id=uploader_teacher_id,
-            source_filename=source_filename or source_path.name,
-            checksum_sha256=checksum,
-            mime_type=PPTX_MIME,
-        )
-        self.store.create_pages(pages)
-        chunks = self.chunker.chunk_pages(pages)
-        self.store.upsert_chunks_for_document(course_id=course_id, document_id=document_id, chunks=chunks)
-        self.store.update_document_status(document_id, status="ingested")
-        logger.info("Ingested PPTX %s slides for %s", len(pages), doc_title)
-        return document
 
     def _copy_source(self, source_path: Path, course_id: str, ext: str) -> tuple[str, Path]:
         document_id = str(uuid.uuid4())
@@ -349,7 +246,7 @@ class DocumentIngestor:
                     ocr_text_raw="",
                     ocr_text_clean=text,
                     merged_text=text,
-                    text_source="pdf",
+                    text_source="video",
                     pdf_text_quality=0.88,
                     ocr_text_quality=0.88,
                     language=detect_language(text),
@@ -394,6 +291,14 @@ def _mime_for_ext(ext: str) -> str:
         ".webm": "video/webm",
     }
     return mapping.get(ext, "application/octet-stream")
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _format_time_range(start_sec: float, end_sec: float) -> str:

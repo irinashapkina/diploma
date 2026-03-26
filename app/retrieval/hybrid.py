@@ -7,6 +7,7 @@ from app.indexing.store import ArtifactStore
 from app.indexing.visual.index import VisualPageIndex
 from app.reranking.reranker import HeuristicReranker
 from app.schemas.models import RetrievalCandidate
+from app.utils.media import parse_video_locator
 
 
 class HybridRetriever:
@@ -64,6 +65,7 @@ class HybridRetriever:
                 key = f"text:{chunk.chunk_id}"
                 cand = combined.get(key)
                 if cand is None:
+                    material_type = str(chunk.metadata.get("material_type", "document"))
                     cand = RetrievalCandidate(
                         candidate_id=key,
                         source_type="text",
@@ -82,6 +84,10 @@ class HybridRetriever:
                             "text_source": chunk.metadata.get("text_source", "ocr"),
                             "pdf_text_quality": float(chunk.metadata.get("pdf_text_quality", 0.0)),
                             "ocr_text_quality": float(chunk.metadata.get("ocr_text_quality", 0.0)),
+                            "material_type": material_type,
+                            "time_start_sec": chunk.metadata.get("time_start_sec"),
+                            "time_end_sec": chunk.metadata.get("time_end_sec"),
+                            "time_label": chunk.metadata.get("time_label"),
                         },
                     )
                     combined[key] = cand
@@ -96,6 +102,7 @@ class HybridRetriever:
                 key = f"text:{chunk.chunk_id}"
                 cand = combined.get(key)
                 if cand is None:
+                    material_type = str(chunk.metadata.get("material_type", "document"))
                     cand = RetrievalCandidate(
                         candidate_id=key,
                         source_type="text",
@@ -114,6 +121,10 @@ class HybridRetriever:
                             "text_source": chunk.metadata.get("text_source", "ocr"),
                             "pdf_text_quality": float(chunk.metadata.get("pdf_text_quality", 0.0)),
                             "ocr_text_quality": float(chunk.metadata.get("ocr_text_quality", 0.0)),
+                            "material_type": material_type,
+                            "time_start_sec": chunk.metadata.get("time_start_sec"),
+                            "time_end_sec": chunk.metadata.get("time_end_sec"),
+                            "time_label": chunk.metadata.get("time_label"),
                         },
                     )
                     combined[key] = cand
@@ -132,6 +143,8 @@ class HybridRetriever:
                     key = f"visual:{page.page_id}"
                     cand = combined.get(key)
                     if cand is None:
+                        locator = parse_video_locator(str(page.image_path))
+                        material_type = "video" if str(page.image_path).startswith("video://") else "document"
                         cand = RetrievalCandidate(
                             candidate_id=key,
                             source_type="visual",
@@ -150,6 +163,10 @@ class HybridRetriever:
                                 "text_source": page.text_source,
                                 "pdf_text_quality": page.pdf_text_quality,
                                 "ocr_text_quality": page.ocr_text_quality,
+                                "material_type": material_type,
+                                "time_start_sec": locator.get("start_sec") if locator else None,
+                                "time_end_sec": locator.get("end_sec") if locator else None,
+                                "time_label": locator.get("label") if locator else None,
                             },
                         )
                         combined[key] = cand

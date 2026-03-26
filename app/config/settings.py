@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     review_llm_triage_claim_confidence_lt: float = 0.62
     docx_pagination_backend: str = "auto"  # auto|soffice|docx2pdf
     docx_allow_fallback_pseudopagination: bool = False
+    video_asr_model: str = "small"
+    video_asr_language: str = "ru"
+    video_max_segment_seconds: int = 45
 
     def ensure_dirs(self) -> None:
         for p in [self.data_dir, self.documents_dir, self.pages_dir, self.indices_dir, self.artifacts_dir]:

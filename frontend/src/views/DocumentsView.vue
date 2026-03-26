@@ -2,7 +2,7 @@
   <section class="page">
     <header class="page-header">
       <h2>Материалы</h2>
-      <p>Загружайте PDF-документы курса и запускайте индексацию для поиска и ИИ-ответов.</p>
+      <p>Загружайте PDF/DOCX/PPTX и видео (MP4/MOV/M4V/MKV/WEBM), затем индексируйте материалы для поиска и ИИ-ответов.</p>
     </header>
 
     <ApiPanel title="Загрузка документа">
@@ -15,8 +15,8 @@
             </option>
           </select>
         </label>
-        <label>Файл (.pdf)
-          <input type="file" accept=".pdf" @change="onFileChange" />
+        <label>Файл
+          <input type="file" accept=".pdf,.docx,.pptx,.mp4,.mov,.m4v,.mkv,.webm" @change="onFileChange" />
         </label>
       </div>
       <div class="row">
@@ -45,6 +45,7 @@
         <thead>
           <tr>
             <th>Документ</th>
+            <th>Тип</th>
             <th>Страниц</th>
             <th>Статус</th>
             <th>Действия</th>
@@ -59,11 +60,12 @@
             <td>
               <strong>{{ doc.document_title }}</strong>
             </td>
+            <td>{{ doc.material_type === "video" ? "Видео" : "Документ" }}</td>
             <td>{{ doc.page_count }}</td>
             <td>
               <StatusPill
-                :label="ingestStatusLabel(documentsStore.documentStatuses[doc.document_id] || 'uploaded')"
-                :variant="ingestStatusVariant(documentsStore.documentStatuses[doc.document_id] || 'uploaded')"
+                :label="ingestStatusLabel(documentsStore.documentStatuses[doc.document_id] || doc.status || 'uploaded')"
+                :variant="ingestStatusVariant(documentsStore.documentStatuses[doc.document_id] || doc.status || 'uploaded')"
               />
             </td>
             <td>
@@ -71,7 +73,9 @@
                 <button class="secondary" :disabled="documentsStore.loading" @click="documentsStore.setSelectedDocument(doc.document_id)">
                   {{ documentsStore.selectedDocumentId === doc.document_id ? "Выбран" : "Открыть" }}
                 </button>
-                <button :disabled="documentsStore.loading" @click="runDocumentIndexing(doc.document_id)">Индексировать</button>
+                <button :disabled="documentsStore.loading || doc.status === 'transcribing'" @click="runDocumentIndexing(doc.document_id)">
+                  Индексировать
+                </button>
               </div>
             </td>
           </tr>
@@ -97,7 +101,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
 import ApiPanel from "@/components/ApiPanel.vue";
 import JsonOutput from "@/components/JsonOutput.vue";
@@ -112,6 +116,7 @@ const documentsStore = useDocumentsStore();
 const activeCourseId = computed(() => coursesStore.selectedCourse?.course_id ?? "");
 const uploadCourseId = ref(activeCourseId.value);
 const uploadFile = ref<File | null>(null);
+let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 watch(
   () => activeCourseId.value,
@@ -155,6 +160,23 @@ async function runDocumentIndexing(documentId: string) {
 onMounted(() => {
   if (!coursesStore.courses.length) {
     void coursesStore.loadFromBackend();
+  }
+  pollTimer = setInterval(() => {
+    if (!activeCourseId.value) return;
+    const hasRunning = documentsStore.documents.some((doc) => {
+      const status = (documentsStore.documentStatuses[doc.document_id] || doc.status || "").toLowerCase();
+      return status === "uploaded" || status === "transcribing" || status === "indexing";
+    });
+    if (hasRunning && !documentsStore.loading) {
+      void refreshDocuments();
+    }
+  }, 5000);
+});
+
+onUnmounted(() => {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
   }
 });
 </script>

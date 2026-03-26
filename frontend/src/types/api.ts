@@ -31,6 +31,10 @@ export interface DocumentOut {
   document_title: string;
   source_pdf: string;
   page_count: number;
+  mime_type: string;
+  source_filename: string;
+  status: string;
+  material_type: "document" | "video";
 }
 
 export interface DocumentListResponse {
@@ -64,6 +68,10 @@ export interface TutorSourceRef {
   snippet: string;
   score: number;
   type: "text" | "visual";
+  material_type?: "document" | "video";
+  source_label?: string | null;
+  time_start_sec?: number | null;
+  time_end_sec?: number | null;
 }
 
 export interface TutorAnswerResponse {
@@ -255,4 +263,20 @@ export interface IndexJobOut {
 export interface IndexJobsResponse {
   course_id: string;
   items: IndexJobOut[];
+}
+
+export interface VideoSegmentOut {
+  segment_id: string;
+  page_number: number;
+  start_sec: number;
+  end_sec: number;
+  time_label: string;
+  text: string;
+}
+
+export interface VideoSegmentsResponse {
+  course_id: string;
+  document_id: string;
+  status: string;
+  segments: VideoSegmentOut[];
 }

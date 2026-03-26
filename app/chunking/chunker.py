@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from app.config.settings import settings
 from app.schemas.models import ChunkRecord, PageRecord
+from app.utils.media import parse_video_locator
 from app.utils.text import clean_ocr_text, normalize_for_retrieval
 
 _heading_pattern = re.compile(r"^([A-ZА-Я0-9][A-ZА-Я0-9\-\s]{3,}|#+\s+\S+)")
@@ -33,6 +34,7 @@ class TextChunker:
         blocks = self._split_into_blocks(text)
         merged_blocks = self._merge_small_blocks(blocks)
         page_title = self._extract_page_title(text)
+        video_locator = parse_video_locator(page.image_path)
         out: list[ChunkRecord] = []
         for idx, block in enumerate(merged_blocks):
             cleaned = clean_ocr_text(block)
@@ -65,6 +67,10 @@ class TextChunker:
                     "page_has_code_like_text": page.has_code_like_text,
                     "page_has_large_image": page.has_large_image,
                     "maybe_visual_priority": bool(page.has_diagram or page.has_large_image),
+                    "material_type": "video" if video_locator else "document",
+                    "time_start_sec": video_locator.get("start_sec") if video_locator else None,
+                    "time_end_sec": video_locator.get("end_sec") if video_locator else None,
+                    "time_label": video_locator.get("label") if video_locator else None,
                 },
                 image_path=page.image_path,
             )

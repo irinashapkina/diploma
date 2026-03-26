@@ -136,6 +136,10 @@ def select_final_sources(
                 snippet=snippet[:220],
                 score=round(float(cand.score), 4),
                 type=cand.source_type,
+                material_type=str(cand.debug.get("material_type", "document")),
+                source_label=_source_label(cand),
+                time_start_sec=_float_or_none(cand.debug.get("time_start_sec")),
+                time_end_sec=_float_or_none(cand.debug.get("time_end_sec")),
             )
         )
 
@@ -385,6 +389,10 @@ def _fallback_sources_from_candidates(
                 snippet=(cand.text or "")[:220],
                 score=round(float(cand.score), 4),
                 type=cand.source_type,
+                material_type=str(cand.debug.get("material_type", "document")),
+                source_label=_source_label(cand),
+                time_start_sec=_float_or_none(cand.debug.get("time_start_sec")),
+                time_end_sec=_float_or_none(cand.debug.get("time_end_sec")),
             )
         )
         if len(out) >= limit:
@@ -578,3 +586,24 @@ def _source_confirms_answer(
         or (_is_list_question(processed_query) and _looks_like_list_fragment(candidate.text or "", text_norm) and question_overlap >= 0.14)
     )
     return verdict, ("general_verified" if verdict else "general_overlap_low"), metrics
+
+
+def _float_or_none(value: object) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _source_label(candidate: RetrievalCandidate) -> str | None:
+    label = str(candidate.debug.get("time_label") or "").strip()
+    if label:
+        return label
+    if str(candidate.debug.get("material_type", "document")) == "video":
+        start = _float_or_none(candidate.debug.get("time_start_sec"))
+        end = _float_or_none(candidate.debug.get("time_end_sec"))
+        if start is not None and end is not None:
+            return f"{int(start)}-{int(end)} sec"
+    return None

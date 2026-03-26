@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from app.config.settings import settings
 from app.indexing.index_manager import IndexManager
 from app.indexing.store import ArtifactStore
-from app.ingestion.pdf_ingestor import PDFIngestor
+from app.ingestion.document_ingestor import DocumentIngestor, VIDEO_EXTENSIONS
 from app.pipeline.rag_pipeline import RAGPipeline
 from app.schemas.models import AskRequest, AskResponse, CourseRecord, TeacherRecord
 from app.services.java_material_review_service import JavaMaterialReviewService
@@ -22,6 +22,7 @@ from app.services.json_review_storage import JsonReviewStorage
 from app.services.reference_sync_service import ReferenceSyncService
 from app.services.review_pdf_apply_service import ReviewPdfApplyService
 from app.services.review_workflow_service import ReviewWorkflowService
+from app.utils.media import parse_video_locator
 from app.utils.logging import setup_logging
 
 setup_logging(logging.INFO)
@@ -41,7 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 store = ArtifactStore()
-ingestor = PDFIngestor()
+ingestor = DocumentIngestor()
 index_manager = IndexManager()
 pipeline = RAGPipeline()
 review_storage = JsonReviewStorage()
@@ -96,6 +97,16 @@ class ReviewEditDecisionRequest(ReviewDecisionRequest):
     edited_text: str
 
 
+def _process_video_document_background(course_id: str, document_id: str) -> None:
+    try:
+        ingestor.process_video_document(document_id=document_id, course_id=course_id)
+        store.update_document_status(document_id, status="indexing")
+        index_manager.index_document(course_id=course_id, document_id=document_id)
+    except Exception as exc:  # pragma: no cover - background task guard
+        logger.exception("Video processing failed for document %s: %s", document_id, exc)
+        store.update_document_status(document_id, status="failed", error_message=str(exc)[:800])
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -143,12 +154,13 @@ def list_courses(teacher_id: str | None = None) -> dict[str, Any]:
 
 
 @app.post("/courses/{course_id}/documents/upload")
-async def upload_document(course_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_document(course_id: str, background_tasks: BackgroundTasks, file: UploadFile = File(...)) -> dict[str, Any]:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required.")
     file_ext = Path(file.filename).suffix.lower()
-    if file_ext not in {".pdf", ".docx", ".pptx"}:
-        raise HTTPException(status_code=400, detail="Supported formats: PDF, DOCX, PPTX.")
+    supported_exts = {".pdf", ".docx", ".pptx"} | VIDEO_EXTENSIONS
+    if file_ext not in supported_exts:
+        raise HTTPException(status_code=400, detail="Supported formats: PDF, DOCX, PPTX, MP4, MOV, M4V, MKV, WEBM.")
     if store.get_course(course_id) is None:
         raise HTTPException(status_code=404, detail=f"Course not found: {course_id}")
     with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
@@ -156,39 +168,26 @@ async def upload_document(course_id: str, file: UploadFile = File(...)) -> dict[
         tmp.write(content)
         tmp_path = Path(tmp.name)
     try:
-        if file_ext == ".pdf":
-            try:
-                doc = ingestor.ingest_pdf(
-                    tmp_path,
-                    course_id=course_id,
-                    title=Path(file.filename).stem,
-                    source_filename=file.filename,
-                )
-            except TypeError:
-                # Backward-compatible fallback for patched/mocked ingestors
-                doc = ingestor.ingest_pdf(tmp_path, course_id=course_id, title=Path(file.filename).stem)
-        elif file_ext == ".docx":
-            doc = ingestor.ingest_docx(
+        if file_ext in VIDEO_EXTENSIONS:
+            doc, should_process = ingestor.prepare_video_upload(
                 tmp_path,
                 course_id=course_id,
                 title=Path(file.filename).stem,
                 source_filename=file.filename,
             )
+            if should_process:
+                if doc.status != "transcribing":
+                    store.update_document_status(doc.document_id, status="transcribing", error_message=None)
+                    doc.status = "transcribing"
+                background_tasks.add_task(_process_video_document_background, course_id, doc.document_id)
         else:
-            doc = ingestor.ingest_pptx(
+            doc = ingestor.ingest(
                 tmp_path,
                 course_id=course_id,
                 title=Path(file.filename).stem,
                 source_filename=file.filename,
             )
-    except TypeError:
-        if file_ext == ".docx":
-            doc = ingestor.ingest_docx(tmp_path, course_id=course_id, title=Path(file.filename).stem)
-        elif file_ext == ".pptx":
-            doc = ingestor.ingest_pptx(tmp_path, course_id=course_id, title=Path(file.filename).stem)
-        else:
-            raise
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -241,6 +240,38 @@ def list_document_pages(course_id: str, document_id: str) -> dict[str, Any]:
     if not pages:
         raise HTTPException(status_code=404, detail="Document not found or has no pages.")
     return {"course_id": course_id, "document_id": document_id, "pages": pages}
+
+
+@app.get("/courses/{course_id}/videos/{document_id}/segments")
+def list_video_segments(course_id: str, document_id: str) -> dict[str, Any]:
+    document = store.get_document(document_id)
+    if not document or document.course_id != course_id:
+        raise HTTPException(status_code=404, detail="Document not found in this course.")
+    mime_type = (document.mime_type or "").lower()
+    if not mime_type.startswith("video/"):
+        raise HTTPException(status_code=400, detail="Document is not a video material.")
+    pages = store.list_pages(course_id=course_id, document_id=document_id)
+    items: list[dict[str, Any]] = []
+    for page in pages:
+        locator = parse_video_locator(page.image_path)
+        if not locator:
+            continue
+        items.append(
+            {
+                "segment_id": page.page_id,
+                "page_number": page.page_number,
+                "start_sec": locator["start_sec"],
+                "end_sec": locator["end_sec"],
+                "time_label": locator["label"],
+                "text": (page.merged_text or page.pdf_text_raw or page.ocr_text_clean or "").strip(),
+            }
+        )
+    return {
+        "course_id": course_id,
+        "document_id": document_id,
+        "status": document.status,
+        "segments": items,
+    }
 
 
 @app.post("/courses/{course_id}/ask", response_model=AskResponse)

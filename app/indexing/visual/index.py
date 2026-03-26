@@ -76,9 +76,22 @@ class VisualPageIndex:
         self._colqwen2 = (processor, model)
 
     def build(self, pages: list[PageRecord]) -> None:
-        self.page_ids = [p.page_id for p in pages]
-        self.image_paths = [p.image_path for p in pages]
+        visual_pages = [p for p in pages if self._is_visual_image_path(p.image_path)]
+        self.page_ids = [p.page_id for p in visual_pages]
+        self.image_paths = [p.image_path for p in visual_pages]
         if not self.image_paths:
+            self.embeddings = None
+            self.embedding_dim = None
+            write_json(
+                self.path_meta,
+                {
+                    "page_ids": [],
+                    "image_paths": [],
+                    "backend": self.active_backend,
+                    "requested_backend": self.backend,
+                    "embedding_dim": None,
+                },
+            )
             return
 
         requested = self.backend
@@ -270,3 +283,10 @@ class VisualPageIndex:
         except Exception as exc:  # pragma: no cover - runtime/deps dependent
             logger.warning("Failed to rebuild visual embeddings after dim mismatch: %s", exc)
             return False
+
+    @staticmethod
+    def _is_visual_image_path(path: str) -> bool:
+        value = str(path or "").strip()
+        if not value or value.startswith("video://"):
+            return False
+        return Path(value).exists()

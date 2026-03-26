@@ -55,6 +55,8 @@ class DocumentRecord(BaseModel):
     page_count: int
     mime_type: str = "application/pdf"
     source_filename: str = ""
+    status: str = "uploaded"
+    material_type: Literal["document", "video"] = "document"
 
 
 class PageRecord(BaseModel):
@@ -68,7 +70,7 @@ class PageRecord(BaseModel):
     ocr_text_raw: str
     ocr_text_clean: str
     merged_text: str = ""
-    text_source: Literal["pdf", "ocr", "pdf+ocr", "docx", "pptx"] = "ocr"
+    text_source: Literal["pdf", "ocr", "pdf+ocr", "docx", "pptx", "video"] = "ocr"
     pdf_text_quality: float = 0.0
     ocr_text_quality: float = 0.0
     language: Literal["ru", "en", "mixed", "unknown"]
@@ -120,6 +122,10 @@ class SourceItem(BaseModel):
     snippet: str
     score: float
     type: Literal["text", "visual"]
+    material_type: Literal["document", "video"] = "document"
+    source_label: str | None = None
+    time_start_sec: float | None = None
+    time_end_sec: float | None = None
 
 
 class AskResponse(BaseModel):

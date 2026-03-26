@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from sqlalchemy import delete, select
+    from sqlalchemy.exc import IntegrityError
 
     from app.db.init_db import init_db
     from app.db.models import AnswerSourceDB, AskMessageDB, ChunkDB, CourseDB, DocumentDB, IndexDB, PageDB, TeacherDB
@@ -177,6 +178,7 @@ class ArtifactStore:
         uploader_teacher_id: str | None = None,
         source_filename: str = "",
         checksum_sha256: str | None = None,
+        mime_type: str | None = None,
     ) -> None:
         if self._legacy:
             docs = self.list_documents(course_id=document.course_id)
@@ -195,25 +197,35 @@ class ArtifactStore:
         with SessionLocal() as db:
             if db.get(CourseDB, document.course_id) is None:
                 raise ValueError(f"Course not found: {document.course_id}")
-            db.add(
-                DocumentDB(
-                    id=document.document_id,
-                    course_id=document.course_id,
-                    uploader_teacher_id=uploader_teacher_id,
-                    title=document.document_title,
-                    source_filename=source_filename or document.source_filename or document.document_title,
-                    source_pdf_path=document.source_pdf,
-                    checksum_sha256=checksum_sha256 or document.document_id,
-                    mime_type=document.mime_type or "application/pdf",
-                    size_bytes=None,
-                    page_count=document.page_count,
-                    status="uploaded",
-                    error_message=None,
+            try:
+                db.add(
+                    DocumentDB(
+                        id=document.document_id,
+                        course_id=document.course_id,
+                        uploader_teacher_id=uploader_teacher_id,
+                        title=document.document_title,
+                        source_filename=source_filename or document.source_filename or document.document_title,
+                        source_pdf_path=document.source_pdf,
+                        checksum_sha256=checksum_sha256 or document.document_id,
+                        mime_type=mime_type or document.mime_type or "application/pdf",
+                        size_bytes=None,
+                        page_count=document.page_count,
+                        status=document.status or "uploaded",
+                        error_message=None,
+                    )
                 )
-            )
-            db.commit()
+                db.commit()
+            except IntegrityError as exc:
+                db.rollback()
+                raise ValueError("A document with identical content already exists in this course.") from exc
 
-    def update_document_status(self, document_id: str, status: str, error_message: str | None = None) -> None:
+    def update_document_status(
+        self,
+        document_id: str,
+        status: str,
+        error_message: str | None = None,
+        page_count: int | None = None,
+    ) -> None:
         if self._legacy:
             return
         with SessionLocal() as db:
@@ -222,6 +234,8 @@ class ArtifactStore:
                 raise ValueError(f"Document not found: {document_id}")
             row.status = status
             row.error_message = error_message
+            if page_count is not None:
+                row.page_count = page_count
             db.commit()
 
     def list_documents(self, course_id: str | None = None) -> list[DocumentRecord]:
@@ -249,6 +263,8 @@ class ArtifactStore:
                 page_count=r.page_count,
                 mime_type=r.mime_type or "application/pdf",
                 source_filename=r.source_filename or "",
+                status=r.status or "uploaded",
+                material_type="video" if (r.mime_type or "").lower().startswith("video/") else "document",
             )
             for r in rows
         ]
@@ -269,6 +285,33 @@ class ArtifactStore:
         if row is None:
             return None
         return row.mime_type or "application/pdf"
+
+    def get_document_by_checksum(self, course_id: str, checksum_sha256: str) -> DocumentRecord | None:
+        checksum = (checksum_sha256 or "").strip()
+        if not checksum:
+            return None
+        if self._legacy:
+            return None
+        with SessionLocal() as db:
+            row = db.execute(
+                select(DocumentDB).where(
+                    DocumentDB.course_id == course_id,
+                    DocumentDB.checksum_sha256 == checksum,
+                )
+            ).scalar_one_or_none()
+        if row is None:
+            return None
+        return DocumentRecord(
+            document_id=row.id,
+            course_id=row.course_id,
+            document_title=row.title,
+            source_pdf=row.source_pdf_path,
+            page_count=row.page_count,
+            mime_type=row.mime_type or "application/pdf",
+            source_filename=row.source_filename or "",
+            status=row.status or "uploaded",
+            material_type="video" if (row.mime_type or "").lower().startswith("video/") else "document",
+        )
 
     def create_pages(self, pages: list[PageRecord]) -> None:
         if not pages:

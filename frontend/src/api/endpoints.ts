@@ -27,6 +27,7 @@ import type {
   TeacherOut,
   TutorAnswerResponse,
   UploadResponse,
+  VideoSegmentsResponse,
 } from "@/types/api";
 
 export const api = {
@@ -92,4 +93,6 @@ export const api = {
     http.get<DocumentVersionsResponse>(`/documents/${documentId}/versions`).then((r) => r.data),
   listCourseIndexJobs: (courseId: string) =>
     http.get<IndexJobsResponse>(`/courses/${courseId}/index-jobs`).then((r) => r.data),
+  listVideoSegments: (courseId: string, documentId: string) =>
+    http.get<VideoSegmentsResponse>(`/courses/${courseId}/videos/${documentId}/segments`).then((r) => r.data),
 };

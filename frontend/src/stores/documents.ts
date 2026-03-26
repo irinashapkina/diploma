@@ -37,9 +37,7 @@ export const useDocumentsStore = defineStore("documents", () => {
     } else {
       documents.value.unshift(document);
     }
-    if (!documentStatuses.value[document.document_id]) {
-      documentStatuses.value = { ...documentStatuses.value, [document.document_id]: "uploaded" };
-    }
+    documentStatuses.value = { ...documentStatuses.value, [document.document_id]: document.status || "uploaded" };
   }
 
   async function loadForCourse(courseId: string) {
@@ -51,7 +49,7 @@ export const useDocumentsStore = defineStore("documents", () => {
       documents.value = items;
       const statuses: Record<string, string> = {};
       for (const item of items) {
-        statuses[item.document_id] = documentStatuses.value[item.document_id] ?? "uploaded";
+        statuses[item.document_id] = item.status || documentStatuses.value[item.document_id] || "uploaded";
       }
       documentStatuses.value = statuses;
       if (

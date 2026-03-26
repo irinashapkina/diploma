@@ -40,12 +40,15 @@
       <div class="grid-2">
         <section
           v-for="(source, index) in relevantSources"
-          :key="`${source.document_title}-${source.page}-${index}`"
+          :key="`${source.document_title}-${source.page}-${source.source_label || ''}-${index}`"
           class="panel"
         >
           <div class="panel-body">
             <strong>{{ source.document_title }}</strong>
-            <p class="muted-note">Страница: {{ source.page }}</p>
+            <p v-if="source.material_type === 'video'" class="muted-note">
+              Таймкод: {{ source.source_label || formatTimeRange(source.time_start_sec, source.time_end_sec) }}
+            </p>
+            <p v-else class="muted-note">Страница: {{ source.page }}</p>
           </div>
         </section>
       </div>
@@ -74,9 +77,13 @@ const relevantSources = computed(() => {
   if (!store.answer?.sources?.length) return [];
   const uniqueKeys = new Set<string>();
   return store.answer.sources
-    .filter((source) => source.document_title.trim().length > 0 && Number.isFinite(source.page) && source.page > 0)
+    .filter(
+      (source) =>
+        source.document_title.trim().length > 0 &&
+        (source.material_type === "video" || (Number.isFinite(source.page) && source.page > 0)),
+    )
     .filter((source) => {
-      const key = `${source.document_title}::${source.page}`;
+      const key = `${source.document_title}::${source.page}::${source.source_label || ""}`;
       if (uniqueKeys.has(key)) return false;
       uniqueKeys.add(key);
       return true;
@@ -107,4 +114,18 @@ onMounted(() => {
     void coursesStore.loadFromBackend();
   }
 });
+
+function formatTimeRange(start?: number | null, end?: number | null) {
+  if (typeof start !== "number" || typeof end !== "number") return "не указан";
+  return `${formatSecs(start)}-${formatSecs(end)}`;
+}
+
+function formatSecs(value: number) {
+  const total = Math.max(0, Math.floor(value));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+  return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+}
 </script>
