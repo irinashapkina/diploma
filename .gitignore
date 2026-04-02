@@ -167,3 +167,5 @@ frontend/dist/
 frontend/.vite/
 .env
 frontend/.env
+.venv/
+venv/
