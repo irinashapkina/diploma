@@ -169,3 +169,5 @@ frontend/.vite/
 frontend/.env
 .venv/
 venv/
+.venv/
+venv/
